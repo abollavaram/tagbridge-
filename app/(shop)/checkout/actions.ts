@@ -3,7 +3,7 @@
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { currentViewer } from '@/lib/auth/guards';
-import { readCart } from '@/lib/commerce/cart-session';
+import { emptyCurrentCart, readCart, readCartLines } from '@/lib/commerce/cart-session';
 import { getPaymentProvider, PaymentNotConfiguredError } from '@/lib/commerce/payments';
 import { OrderError, placeOrder } from '@/lib/commerce/orders';
 import { logger } from '@/lib/telemetry/logger';
@@ -35,14 +35,14 @@ export async function checkoutWithPurchaseOrderAction(formData: FormData): Promi
   });
   if (!parsed.success) redirect('/checkout?error=invalid-po');
 
-  const cart = await readCart();
-  if (!cart.id || cart.lines.length === 0) redirect('/cart');
+  const lines = await readCartLines();
+  if (lines.length === 0) redirect('/cart');
 
   const viewer = await currentViewer();
   let number: string;
   try {
     const order = await placeOrder({
-      cartId: cart.id,
+      lines,
       email: parsed.data.email,
       companyName: parsed.data.companyName,
       userId: viewer?.id,
@@ -55,6 +55,7 @@ export async function checkoutWithPurchaseOrderAction(formData: FormData): Promi
     throw error;
   }
 
+  await emptyCurrentCart();
   redirect(`/checkout/confirmation/${number}`);
 }
 
@@ -73,11 +74,12 @@ export async function checkoutWithCardAction(formData: FormData): Promise<void> 
   if (!provider.configured) redirect('/checkout?error=card-unavailable');
 
   const cart = await readCart();
-  if (!cart.id || cart.lines.length === 0) redirect('/cart');
+  const lines = await readCartLines();
+  if (lines.length === 0) redirect('/cart');
 
   const viewer = await currentViewer();
   const order = await placeOrder({
-    cartId: cart.id,
+    lines,
     email: parsed.data.email,
     companyName: parsed.data.companyName,
     userId: viewer?.id,
@@ -108,5 +110,6 @@ export async function checkoutWithCardAction(formData: FormData): Promise<void> 
     redirect('/checkout?error=payment-failed');
   }
 
+  await emptyCurrentCart();
   redirect(url);
 }

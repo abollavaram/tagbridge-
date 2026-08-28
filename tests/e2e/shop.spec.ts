@@ -77,6 +77,48 @@ test('cart quantity can be changed and the price re-resolves', async ({ page }) 
   ).toBeVisible();
 });
 
+test('two different products both stay in the cart', async ({ page }) => {
+  // The reported bug: with the cart held in per-instance server memory, items
+  // added across different instances each vanished from the other's view, so
+  // only some of what a buyer added ever showed up.
+  await addFirstVariant(page, 1);
+
+  await page.goto('/products/streamline-connector-sql-server');
+  const second = page
+    .locator('form')
+    .filter({ has: page.getByRole('button', { name: 'Add to cart' }) })
+    .first();
+  await second.getByLabel('Quantity').fill('2');
+  await second.getByRole('button', { name: 'Add to cart' }).click();
+  await page.waitForURL(/\/cart/);
+
+  await expect(
+    page.getByRole('link', { name: 'Meridian OPC UA Server for Allen-Bradley' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('link', { name: 'Streamline Connector for SQL Server' }),
+  ).toBeVisible();
+  const rows = page.getByRole('row').filter({ has: page.getByRole('button', { name: 'Remove' }) });
+  await expect(rows).toHaveCount(2);
+});
+
+test('a third product joins the first two rather than replacing them', async ({ page }) => {
+  await addFirstVariant(page, 1);
+
+  for (const slug of ['crosslink-gateway-modbus-rtu-serial-bridge', 'probe-modbus-scanner']) {
+    await page.goto(`/products/${slug}`);
+    const form = page
+      .locator('form')
+      .filter({ has: page.getByRole('button', { name: 'Add to cart' }) })
+      .first();
+    await form.getByRole('button', { name: 'Add to cart' }).click();
+    await page.waitForURL(/\/cart/);
+  }
+
+  const rows = page.getByRole('row').filter({ has: page.getByRole('button', { name: 'Remove' }) });
+  await expect(rows).toHaveCount(3);
+});
+
 test('an item can be removed, emptying the cart', async ({ page }) => {
   await addFirstVariant(page, 2);
   await page.getByRole('button', { name: 'Remove' }).click();

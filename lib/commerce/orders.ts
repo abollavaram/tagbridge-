@@ -2,13 +2,14 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { getDatabase } from '@/lib/db';
 import { auditLog, orderItems, orders, productVariants, products } from '@/lib/db/schema';
 import type { OrderStatus, PaymentMethod } from '@/lib/db/schema';
-import { clearCart, readCartById } from './cart';
+import type { CartLineInput } from './cart-cookie';
 import { laddersForVariants } from './catalog';
 import { priceLines, subtotalCents } from './pricing';
 import { firstRow } from '@/lib/db/rows';
 
 export interface PlaceOrderInput {
-  cartId: string;
+  /** Variant ids and quantities only. Prices are resolved here, never passed. */
+  lines: readonly CartLineInput[];
   email: string;
   companyName?: string | undefined;
   userId?: string | undefined;
@@ -62,19 +63,22 @@ export async function nextOrderNumber(now = new Date()): Promise<string> {
  */
 export async function placeOrder(input: PlaceOrderInput): Promise<PlacedOrder> {
   const db = await getDatabase();
-  const cart = await readCartById(input.cartId);
-  if (cart.lines.length === 0) throw new OrderError('cart is empty');
+  if (input.lines.length === 0) throw new OrderError('cart is empty');
 
   if (input.paymentMethod === 'purchase_order' && !input.poNumber?.trim()) {
     throw new OrderError('a purchase order number is required for the PO path');
   }
 
-  const variantIds = cart.lines.map((l) => l.variantId);
+  const variantIds = input.lines.map((l) => l.variantId);
   const ladders = await laddersForVariants(variantIds);
-  const priced = priceLines(
-    cart.lines.map((l) => ({ variantId: l.variantId, qty: l.qty })),
-    ladders,
-  );
+  // Any line whose variant no longer exists is refused rather than skipped:
+  // silently dropping a line from an order is worse than not placing it.
+  for (const line of input.lines) {
+    if (!ladders.has(line.variantId)) {
+      throw new OrderError(`unknown variant ${line.variantId}`);
+    }
+  }
+  const priced = priceLines(input.lines, ladders);
   const total = subtotalCents(priced);
 
   const snapshotRows = await db
@@ -134,8 +138,6 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlacedOrder> {
       lineCount: priced.length,
     },
   });
-
-  await clearCart(input.cartId);
 
   return { id: order.id, number: order.number, status, subtotalCents: total };
 }

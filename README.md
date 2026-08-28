@@ -17,7 +17,7 @@ survives the failure modes real integrations hit.
 | Search precision@3, hybrid + rerank | **0.89** |
 | …against a default full-text baseline | **0.52** |
 | Products in catalog | 50 |
-| Tests | 193 unit + integration, 27 end-to-end |
+| Tests | 273 unit + integration, 29 end-to-end |
 | Lighthouse (mobile, product page) | 99 / 100 / 100 / 100 |
 
 ## Search evaluation
@@ -262,6 +262,19 @@ URL that does not resolve. It only surfaced as a log line, because the test data
 already been created with the extension present. Adding the package to
 `serverExternalPackages` fixed it; deleting `.pglite` and re-running the e2e suite from
 an empty database confirmed it.
+
+**Only some items reached the cart.** Reported from the deployed site, and the
+explanation was in the architecture rather than the cart code. Without a shared
+database each serverless instance restores the snapshot into its *own* memory, so a
+cart row written while serving one request did not exist for the next request if it
+landed elsewhere — items appeared to vanish at random. Cart contents now live in the
+cookie: only variant ids and quantities, with every price still resolved server-side
+from `price_tiers` on read, so the guarantee that a client cannot choose what something
+costs is unchanged.
+
+The reason it survived a full end-to-end suite is worth more than the fix: **every cart
+test added exactly one product.** One item can never expose a bug that only appears
+across two. There are now tests for two products and for three.
 
 **A random order number is not a unique order number.** `TB-YYYYMM-` plus six random
 hex characters looks safe and is not: at a few thousand orders a collision is more

@@ -7,9 +7,9 @@ delete process.env.DATABASE_URL;
 
 const { getDatabase } = await import('@/lib/db');
 const { seed } = await import('@/lib/db/seed');
-const { auditLog, cartItems, carts, orderItems, orders, priceTiers, productVariants } =
+const { auditLog, orderItems, orders, priceTiers, productVariants } =
   await import('@/lib/db/schema');
-const { readCartById, clearCart } = await import('@/lib/commerce/cart');
+const { priceCartLines } = await import('@/lib/commerce/cart');
 const {
   placeOrder,
   OrderError,
@@ -26,17 +26,9 @@ const { resolveUnitPriceCents } = await import('@/lib/commerce/pricing');
 type Db = Awaited<ReturnType<typeof getDatabase>>;
 let db: Db;
 
-async function newCart(lines: { variantId: string; qty: number }[]): Promise<string> {
-  const inserted = await db
-    .insert(carts)
-    .values({ anonymousId: globalThis.crypto.randomUUID() })
-    .returning();
-  const cartId = inserted[0]?.id;
-  if (!cartId) throw new Error('no cart');
-  for (const line of lines) {
-    await db.insert(cartItems).values({ cartId, variantId: line.variantId, qty: line.qty });
-  }
-  return cartId;
+/** A cart is now just a list of lines; nothing is written to the database. */
+function cartOf(lines: { variantId: string; qty: number }[]): { variantId: string; qty: number }[] {
+  return lines;
 }
 
 async function variantBySku(sku: string) {
@@ -119,8 +111,7 @@ describe('catalog queries', () => {
 describe('cart pricing comes from the database', () => {
   it('applies the volume break that the quantity earns', async () => {
     const variant = await variantBySku('TB-OPCUA-4100-M');
-    const cartId = await newCart([{ variantId: variant.id, qty: 10 }]);
-    const cart = await readCartById(cartId);
+    const cart = await priceCartLines(cartOf([{ variantId: variant.id, qty: 10 }]));
 
     const ladders = await laddersForVariants([variant.id]);
     const expected = resolveUnitPriceCents(ladders.get(variant.id) ?? [], 10);
@@ -133,15 +124,15 @@ describe('cart pricing comes from the database', () => {
 
   it('re-reads the price after the ladder changes, because the cart stores no price', async () => {
     const variant = await variantBySku('TB-DIAG-9700-SGL');
-    const cartId = await newCart([{ variantId: variant.id, qty: 1 }]);
-    const before = await readCartById(cartId);
+    const lines = cartOf([{ variantId: variant.id, qty: 1 }]);
+    const before = await priceCartLines(lines);
 
     await db
       .update(priceTiers)
       .set({ unitPriceCents: 1_234 })
       .where(eq(priceTiers.variantId, variant.id));
 
-    const after = await readCartById(cartId);
+    const after = await priceCartLines(lines);
     expect(before.lines[0]?.unitPriceCents).not.toBe(1_234);
     expect(after.lines[0]?.unitPriceCents).toBe(1_234);
     expect(after.subtotalCents).toBe(1_234);
@@ -150,20 +141,20 @@ describe('cart pricing comes from the database', () => {
   it('sums a mixed cart', async () => {
     const a = await variantBySku('TB-GW-5100-S');
     const b = await variantBySku('TB-MQTT-7100-M-S');
-    const cartId = await newCart([
-      { variantId: a.id, qty: 5 },
-      { variantId: b.id, qty: 2 },
-    ]);
-    const cart = await readCartById(cartId);
+    const cart = await priceCartLines(
+      cartOf([
+        { variantId: a.id, qty: 5 },
+        { variantId: b.id, qty: 2 },
+      ]),
+    );
     expect(cart.lines).toHaveLength(2);
     expect(cart.itemCount).toBe(7);
-    const expected = cart.lines.reduce((n, l) => n + l.unitPriceCents * l.qty, 0);
+    const expected = cart.lines.reduce((n: number, l) => n + l.unitPriceCents * l.qty, 0);
     expect(cart.subtotalCents).toBe(expected);
   });
 
   it('reports an empty cart as empty rather than failing', async () => {
-    const cartId = await newCart([]);
-    const cart = await readCartById(cartId);
+    const cart = await priceCartLines(cartOf([]));
     expect(cart.lines).toEqual([]);
     expect(cart.subtotalCents).toBe(0);
   });
@@ -172,10 +163,10 @@ describe('cart pricing comes from the database', () => {
 describe('purchase order checkout', () => {
   it('creates an order with no payment taken', async () => {
     const variant = await variantBySku('TB-OPCUA-4200-L');
-    const cartId = await newCart([{ variantId: variant.id, qty: 2 }]);
+    const cart = cartOf([{ variantId: variant.id, qty: 2 }]);
 
     const order = await placeOrder({
-      cartId,
+      lines: cart,
       email: 'buyer@example.com',
       companyName: 'Northfield Processing',
       paymentMethod: 'purchase_order',
@@ -194,9 +185,9 @@ describe('purchase order checkout', () => {
 
   it('snapshots the product name and SKU so a later catalog edit cannot rewrite the order', async () => {
     const variant = await variantBySku('TB-HIST-6100-S');
-    const cartId = await newCart([{ variantId: variant.id, qty: 1 }]);
+    const cart = cartOf([{ variantId: variant.id, qty: 1 }]);
     const order = await placeOrder({
-      cartId,
+      lines: cart,
       email: 'buyer@example.com',
       paymentMethod: 'purchase_order',
       poNumber: 'PO-1',
@@ -212,12 +203,12 @@ describe('purchase order checkout', () => {
 
   it('prices the order from the ladder, not from anything the caller sent', async () => {
     const variant = await variantBySku('TB-GW-5200-M');
-    const cartId = await newCart([{ variantId: variant.id, qty: 25 }]);
+    const cart = cartOf([{ variantId: variant.id, qty: 25 }]);
     const ladders = await laddersForVariants([variant.id]);
     const expected = resolveUnitPriceCents(ladders.get(variant.id) ?? [], 25);
 
     const order = await placeOrder({
-      cartId,
+      lines: cart,
       email: 'buyer@example.com',
       paymentMethod: 'purchase_order',
       poNumber: 'PO-25',
@@ -225,33 +216,26 @@ describe('purchase order checkout', () => {
     expect(order.subtotalCents).toBe(expected * 25);
   });
 
-  it('empties the cart so the order cannot be placed twice', async () => {
-    const variant = await variantBySku('TB-RED-9100-STD');
-    const cartId = await newCart([{ variantId: variant.id, qty: 1 }]);
-    await placeOrder({
-      cartId,
-      email: 'buyer@example.com',
-      paymentMethod: 'purchase_order',
-      poNumber: 'PO-2',
-    });
-    const after = await readCartById(cartId);
-    expect(after.lines).toEqual([]);
+  it('refuses an empty cart rather than creating an order with no lines', async () => {
+    // Clearing the cart after a successful order is the checkout action's job,
+    // not this function's — `tests/e2e/shop.spec.ts` covers that end to end.
+    // What is guaranteed here is that an empty cart never becomes an order.
     await expect(
       placeOrder({
-        cartId,
+        lines: [],
         email: 'buyer@example.com',
         paymentMethod: 'purchase_order',
-        poNumber: 'PO-2',
+        poNumber: 'PO-EMPTY',
       }),
     ).rejects.toThrow(OrderError);
   });
 
   it('refuses a PO order with no PO number', async () => {
     const variant = await variantBySku('TB-DIAG-9600-SGL');
-    const cartId = await newCart([{ variantId: variant.id, qty: 1 }]);
+    const cart = cartOf([{ variantId: variant.id, qty: 1 }]);
     await expect(
       placeOrder({
-        cartId,
+        lines: cart,
         email: 'buyer@example.com',
         paymentMethod: 'purchase_order',
         poNumber: '   ',
@@ -261,9 +245,9 @@ describe('purchase order checkout', () => {
 
   it('writes an audit row for the placement', async () => {
     const variant = await variantBySku('TB-HMI-8100-S');
-    const cartId = await newCart([{ variantId: variant.id, qty: 1 }]);
+    const cart = cartOf([{ variantId: variant.id, qty: 1 }]);
     const order = await placeOrder({
-      cartId,
+      lines: cart,
       email: 'buyer@example.com',
       paymentMethod: 'purchase_order',
       poNumber: 'PO-AUDIT',
@@ -280,9 +264,9 @@ describe('purchase order checkout', () => {
 describe('card checkout order', () => {
   it('starts as pending payment and becomes paid only when told so out of band', async () => {
     const variant = await variantBySku('TB-MQTT-7200-M');
-    const cartId = await newCart([{ variantId: variant.id, qty: 3 }]);
+    const cart = cartOf([{ variantId: variant.id, qty: 3 }]);
     const order = await placeOrder({
-      cartId,
+      lines: cart,
       email: 'buyer@example.com',
       paymentMethod: 'card',
     });
@@ -313,13 +297,27 @@ describe('order numbers', () => {
 });
 
 describe('housekeeping', () => {
-  it('clears a cart on request', async () => {
+  it('drops a line whose variant is no longer in the catalogue', async () => {
     const variant = await variantBySku('TB-HMI-8700-STD');
-    const cartId = await newCart([{ variantId: variant.id, qty: 1 }]);
-    await clearCart(cartId);
-    expect((await readCartById(cartId)).lines).toEqual([]);
-    const remaining = await db.select().from(cartItems).where(eq(cartItems.cartId, cartId));
-    expect(remaining).toEqual([]);
+    const cart = await priceCartLines(
+      cartOf([
+        { variantId: variant.id, qty: 1 },
+        { variantId: '11111111-1111-4111-8111-111111111111', qty: 1 },
+      ]),
+    );
+    expect(cart.lines).toHaveLength(1);
+    expect(cart.lines[0]?.variant.sku).toBe('TB-HMI-8700-STD');
+  });
+
+  it('refuses to place an order containing an unknown variant', async () => {
+    await expect(
+      placeOrder({
+        lines: [{ variantId: '11111111-1111-4111-8111-111111111111', qty: 1 }],
+        email: 'buyer@example.com',
+        paymentMethod: 'purchase_order',
+        poNumber: 'PO-GHOST',
+      }),
+    ).rejects.toThrow(/unknown variant/);
   });
 
   it('leaves no order without items', async () => {

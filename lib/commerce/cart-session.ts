@@ -1,83 +1,63 @@
 import { cookies } from 'next/headers';
-import { currentViewer } from '@/lib/auth/guards';
 import {
-  addItem,
-  clearCart,
-  createCart,
-  EMPTY_CART,
-  findCartIdForAnonymous,
-  findCartIdForUser,
-  readCartById,
-  removeItem,
-  setItemQty,
-  type Cart,
-} from './cart';
+  addLine,
+  CART_COOKIE,
+  CART_COOKIE_MAX_AGE,
+  decodeCart,
+  encodeCart,
+  removeLine,
+  setLineQty,
+  type CartLineInput,
+} from './cart-cookie';
+import { priceCartLines, type Cart, EMPTY_CART } from './cart';
 
 /**
- * Works out which cart the current request owns.
+ * The cart for the current request.
  *
- * Signed in: the cart belongs to the user. Anonymous: it belongs to an opaque
- * id in an httpOnly cookie.
+ * Contents come from the cookie rather than from server memory, because a
+ * deployment without a shared database restores its snapshot into each
+ * instance separately — a cart written on one instance simply does not exist
+ * on the next. Prices are still resolved from the database on every read.
  */
 
-const CART_COOKIE = 'tb_cart';
-const CART_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
-
-/** Never creates a cart: rendering a page must not leave a row behind. */
-export async function currentCartId(): Promise<string | null> {
-  const viewer = await currentViewer();
-  if (viewer) {
-    const owned = await findCartIdForUser(viewer.id);
-    if (owned) return owned;
-  }
-  const anonymousId = (await cookies()).get(CART_COOKIE)?.value;
-  if (!anonymousId) return null;
-  return findCartIdForAnonymous(anonymousId);
+export async function readCartLines(): Promise<CartLineInput[]> {
+  return decodeCart((await cookies()).get(CART_COOKIE)?.value);
 }
 
-/** Called only from server actions, which are permitted to set cookies. */
-async function ensureCartId(): Promise<string> {
-  const existing = await currentCartId();
-  if (existing) return existing;
+export async function readCart(): Promise<Cart> {
+  const lines = await readCartLines();
+  if (lines.length === 0) return EMPTY_CART;
+  return priceCartLines(lines);
+}
 
-  const viewer = await currentViewer();
-  if (viewer) return createCart({ userId: viewer.id });
-
+/** Only callable from a server action or route handler. */
+async function writeCartLines(lines: readonly CartLineInput[]): Promise<void> {
   const jar = await cookies();
-  const anonymousId = jar.get(CART_COOKIE)?.value ?? globalThis.crypto.randomUUID();
-  jar.set(CART_COOKIE, anonymousId, {
+  if (lines.length === 0) {
+    jar.delete(CART_COOKIE);
+    return;
+  }
+  jar.set(CART_COOKIE, encodeCart(lines), {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
     path: '/',
     maxAge: CART_COOKIE_MAX_AGE,
   });
-  return createCart({ anonymousId });
-}
-
-export async function readCart(): Promise<Cart> {
-  const cartId = await currentCartId();
-  if (!cartId) return EMPTY_CART;
-  return readCartById(cartId);
 }
 
 export async function addToCart(variantId: string, qty: number): Promise<void> {
-  await addItem(await ensureCartId(), variantId, qty);
+  await writeCartLines(addLine(await readCartLines(), variantId, qty));
 }
 
 export async function setCartQty(variantId: string, qty: number): Promise<void> {
-  const cartId = await currentCartId();
-  if (!cartId) return;
-  await setItemQty(cartId, variantId, qty);
+  await writeCartLines(setLineQty(await readCartLines(), variantId, qty));
 }
 
 export async function removeFromCart(variantId: string): Promise<void> {
-  const cartId = await currentCartId();
-  if (!cartId) return;
-  await removeItem(cartId, variantId);
+  await writeCartLines(removeLine(await readCartLines(), variantId));
 }
 
 export async function emptyCurrentCart(): Promise<void> {
-  const cartId = await currentCartId();
-  if (cartId) await clearCart(cartId);
+  await writeCartLines([]);
 }
