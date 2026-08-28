@@ -1,7 +1,17 @@
 import type { NextConfig } from 'next';
 
+/**
+ * PGlite holds an exclusive lock on its data directory, and Next spawns
+ * several worker processes for static generation. With a real DATABASE_URL
+ * that is fine — Postgres handles the concurrency — but on the local fallback
+ * two workers race for the same directory and a prerender fails intermittently.
+ * One worker, only when there is no database URL to talk to.
+ */
+const usesLocalPglite = !process.env.DATABASE_URL;
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  ...(usesLocalPglite ? { experimental: { cpus: 1, workerThreads: false } } : {}),
   poweredByHeader: false,
   // PGlite ships its extensions as tarball assets loaded at runtime; bundling
   // them rewrites the paths and the extension then cannot be found.

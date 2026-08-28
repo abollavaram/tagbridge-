@@ -71,3 +71,39 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  lighthouse:
+    name: lighthouse
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Seed and build
+        run: pnpm db:setup && pnpm build
+
+      - name: Serve
+        run: pnpm start --port 3100 &
+        env:
+          AUTH_SECRET: ci-lighthouse-secret-${{ github.run_id }}
+          PGLITE_DATA_DIR: .pglite
+          LOG_LEVEL: warn
+
+      - name: Wait for the server
+        run: npx --yes wait-on http://127.0.0.1:3100/api/health --timeout 120000
+
+      # Fails the job if any page misses the thresholds in SPEC.md §1.
+      - name: Lighthouse thresholds
+        run: pnpm lighthouse http://127.0.0.1:3100

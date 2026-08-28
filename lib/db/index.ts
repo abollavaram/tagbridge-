@@ -22,6 +22,16 @@ let instance: Promise<AppDatabase> | null = null;
 export function getDatabase(): Promise<AppDatabase> {
   if (instance) return instance;
   instance = (async (): Promise<AppDatabase> => {
+    // A serverless deployment has a read-only filesystem, so the PGlite
+    // fallback cannot work there. Fail with the reason rather than with an
+    // obscure write error on the first request.
+    if (!getEnv().DATABASE_URL && process.env.VERCEL) {
+      throw new Error(
+        'DATABASE_URL is not set on this deployment. The local PGlite fallback ' +
+          'needs a writable filesystem and cannot run on Vercel — set DATABASE_URL ' +
+          'to a Postgres connection string in the project environment variables.',
+      );
+    }
     if (getEnv().DATABASE_URL) {
       const { getDb } = await import('./client');
       return getDb() as unknown as AppDatabase;

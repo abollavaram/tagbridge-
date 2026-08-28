@@ -54,6 +54,14 @@ export const subscriptionStatusEnum = pgEnum('subscription_status', [
   'incomplete',
 ]);
 export const syncStateEnum = pgEnum('sync_state', ['pending', 'synced', 'failed', 'drifted']);
+export const orderStatusEnum = pgEnum('order_status', [
+  'pending_payment',
+  'paid',
+  'po_received',
+  'fulfilled',
+  'cancelled',
+]);
+export const paymentMethodEnum = pgEnum('payment_method', ['card', 'purchase_order']);
 export const webhookStatusEnum = pgEnum('webhook_status', [
   'received',
   'processed',
@@ -292,6 +300,49 @@ export const quoteEvents = pgTable(
   (t) => [index('quote_events_quote_idx').on(t.quoteId)],
 );
 
+/* ---------------------------------------------------------------- orders */
+
+export const orders = pgTable(
+  'orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    number: text('number').notNull().unique(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    email: text('email').notNull(),
+    companyName: text('company_name'),
+    status: orderStatusEnum('status').notNull(),
+    paymentMethod: paymentMethodEnum('payment_method').notNull(),
+    /** Server-computed from price_tiers at the moment the order was placed. */
+    subtotalCents: integer('subtotal_cents').notNull(),
+    currency: text('currency').notNull().default('usd'),
+    stripeSessionId: text('stripe_session_id').unique(),
+    poNumber: text('po_number'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('orders_user_idx').on(t.userId), index('orders_status_idx').on(t.status)],
+);
+
+export const orderItems = pgTable(
+  'order_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    variantId: uuid('variant_id')
+      .notNull()
+      .references(() => productVariants.id, { onDelete: 'restrict' }),
+    qty: integer('qty').notNull(),
+    unitPriceCents: integer('unit_price_cents').notNull(),
+    lineTotalCents: integer('line_total_cents').notNull(),
+    /** Frozen at order time: the catalog may change, the order may not. */
+    productNameSnapshot: text('product_name_snapshot').notNull(),
+    variantSkuSnapshot: text('variant_sku_snapshot').notNull(),
+  },
+  (t) => [index('order_items_order_idx').on(t.orderId)],
+);
+
 /* --------------------------------------------------------- subscriptions */
 
 export const subscriptions = pgTable(
@@ -397,7 +448,23 @@ export const quoteLineItemsRelations = relations(quoteLineItems, ({ one }) => ({
   }),
 }));
 
+export const ordersRelations = relations(orders, ({ one, many }) => ({
+  user: one(users, { fields: [orders.userId], references: [users.id] }),
+  items: many(orderItems),
+}));
+
+export const orderItemsRelations = relations(orderItems, ({ one }) => ({
+  order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
+  variant: one(productVariants, {
+    fields: [orderItems.variantId],
+    references: [productVariants.id],
+  }),
+}));
+
 export type Product = typeof products.$inferSelect;
+export type Order = typeof orders.$inferSelect;
+export type OrderStatus = (typeof orderStatusEnum.enumValues)[number];
+export type PaymentMethod = (typeof paymentMethodEnum.enumValues)[number];
 export type NewProduct = typeof products.$inferInsert;
 export type ProductVariant = typeof productVariants.$inferSelect;
 export type PriceTier = typeof priceTiers.$inferSelect;
