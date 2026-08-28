@@ -24,6 +24,32 @@ export interface Harness {
 }
 
 /**
+ * Restores the build-time snapshot into a fresh in-process Postgres.
+ *
+ * This is what the app runs on when no DATABASE_URL is configured. The
+ * database is real — real migrations, real pgvector, real constraints — but it
+ * lives in memory, so writes are per-instance and do not outlive it. Setting
+ * DATABASE_URL swaps in a durable Postgres and this path is never taken.
+ */
+export async function restoreFromSnapshot(): Promise<Harness> {
+  const { readFileSync } = await import('node:fs');
+  const { SNAPSHOT_PATH } = await import('./snapshot-path');
+  const bytes = readFileSync(SNAPSHOT_PATH);
+  const client = await PGlite.create({
+    loadDataDir: new Blob([bytes]),
+    extensions: { vector },
+  });
+  const db = drizzle(client, { schema });
+  return {
+    db,
+    client,
+    close: async () => {
+      await client.close();
+    },
+  };
+}
+
+/**
  * An in-process Postgres carrying the real migrations and the real pgvector
  * extension. Used by the test suite and by `pnpm db:seed` on a clean clone, so
  * that neither needs a provisioned database to run.

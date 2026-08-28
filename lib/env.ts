@@ -25,7 +25,6 @@ const envSchema = z.object({
    *  ALLOW_DEV_LOGIN_IN_PROD is also set, which only the demo deployment does. */
   AUTH_DEV_LOGIN: z.enum(['true', 'false']).optional(),
   ALLOW_DEV_LOGIN_IN_PROD: z.enum(['true', 'false']).optional(),
-  PGLITE_DATA_DIR: z.string().min(1).optional(),
   NEXT_PUBLIC_SITE_URL: z.string().url().optional(),
 });
 

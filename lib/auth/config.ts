@@ -1,5 +1,6 @@
 import type { NextAuthConfig } from 'next-auth';
 import { ROLES, type Role } from './roles';
+import { authSecret } from './secret';
 
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 
@@ -21,6 +22,7 @@ export const authConfig = {
   // library cannot verify against a fixed AUTH_URL; the middleware half needs
   // this as much as the Node half does.
   trustHost: true,
+  secret: authSecret(),
   session: {
     strategy: 'jwt',
     maxAge: THIRTY_DAYS_SECONDS,

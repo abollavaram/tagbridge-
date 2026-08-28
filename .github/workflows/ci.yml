@@ -98,7 +98,6 @@ jobs:
         run: pnpm start --port 3100 &
         env:
           AUTH_SECRET: ci-lighthouse-secret-${{ github.run_id }}
-          PGLITE_DATA_DIR: .pglite
           LOG_LEVEL: warn
 
       - name: Wait for the server

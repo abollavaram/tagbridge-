@@ -1,4 +1,5 @@
 import { signIn } from '@/lib/auth';
+import { providerAvailability } from '@/lib/auth/providers';
 
 export const metadata = { title: 'Sign in' };
 
@@ -8,13 +9,6 @@ const DEMO_ACCOUNTS = [
   { email: 'admin@example.com', label: 'Admin — full administration' },
 ];
 
-function devLoginEnabled(): boolean {
-  return (
-    process.env.AUTH_DEV_LOGIN === 'true' &&
-    (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_LOGIN_IN_PROD === 'true')
-  );
-}
-
 export default async function SignInPage({
   searchParams,
 }: {
@@ -22,8 +16,8 @@ export default async function SignInPage({
 }) {
   const params = await searchParams;
   const callbackUrl = params.callbackUrl ?? '/account';
-  const emailEnabled = Boolean(process.env.EMAIL_SERVER && process.env.DATABASE_URL);
-  const googleEnabled = Boolean(process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET);
+  const { google: googleEnabled, email: emailEnabled, demo: demoEnabled } =
+    providerAvailability();
 
   return (
     <div className="mx-auto max-w-md space-y-8">
@@ -82,14 +76,15 @@ export default async function SignInPage({
         </form>
       ) : null}
 
-      {devLoginEnabled() ? (
+      {demoEnabled ? (
         <section aria-labelledby="demo" className="space-y-3 rounded-lg border border-ink-100 p-4 dark:border-ink-700">
           <h2 id="demo" className="text-sm font-semibold uppercase tracking-widest text-ink-500">
             Demo accounts
           </h2>
           <p className="text-sm text-ink-500">
             This deployment has no mail server or Google client configured, so the three
-            seeded roles sign in directly. No other address is accepted.
+            seeded roles sign in directly. No other address is accepted, and these
+            accounts hold no real data.
           </p>
           {DEMO_ACCOUNTS.map((account) => (
             <form
@@ -111,7 +106,7 @@ export default async function SignInPage({
         </section>
       ) : null}
 
-      {!emailEnabled && !googleEnabled && !devLoginEnabled() ? (
+      {!emailEnabled && !googleEnabled && !demoEnabled ? (
         <p className="text-sm text-ink-500">
           No sign-in provider is configured for this deployment.
         </p>

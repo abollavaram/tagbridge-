@@ -14,31 +14,31 @@ let instance: Promise<AppDatabase> | null = null;
 /**
  * The database the running app talks to.
  *
- * With DATABASE_URL set (Vercel, CI against Neon, any real deployment) this is
- * Postgres. Without it — a clean clone, `pnpm dev`, the e2e run — it is a
- * file-backed PGlite carrying the same migrations, so the storefront comes up
- * and the tests are meaningful without provisioning anything.
+ * With DATABASE_URL set this is Postgres — Neon, or anything else that speaks
+ * the protocol — and it is durable. Without it the app restores the build-time
+ * snapshot into an in-process Postgres: same migrations, same pgvector, same
+ * constraints, but held in memory, so writes last only as long as the instance.
+ * That is what lets the storefront deploy and run with no configuration at all.
  */
 export function getDatabase(): Promise<AppDatabase> {
   if (instance) return instance;
   instance = (async (): Promise<AppDatabase> => {
-    // A serverless deployment has a read-only filesystem, so the PGlite
-    // fallback cannot work there. Fail with the reason rather than with an
-    // obscure write error on the first request.
-    if (!getEnv().DATABASE_URL && process.env.VERCEL) {
-      throw new Error(
-        'DATABASE_URL is not set on this deployment. The local PGlite fallback ' +
-          'needs a writable filesystem and cannot run on Vercel — set DATABASE_URL ' +
-          'to a Postgres connection string in the project environment variables.',
-      );
-    }
     if (getEnv().DATABASE_URL) {
       const { getDb } = await import('./client');
       return getDb() as unknown as AppDatabase;
     }
-    const { createPgliteHarness } = await import('./pglite');
-    const { db } = await createPgliteHarness(process.env.PGLITE_DATA_DIR ?? '.pglite');
-    return db as unknown as AppDatabase;
+    const { createPgliteHarness, restoreFromSnapshot } = await import('./pglite');
+    try {
+      const { db } = await restoreFromSnapshot();
+      return db as unknown as AppDatabase;
+    } catch {
+      // No snapshot yet — a clean clone running the tests before any build
+      // step. Construct the same database the long way instead of failing.
+      const { db } = await createPgliteHarness();
+      const { seed } = await import('./seed');
+      await seed(db as unknown as AppDatabase);
+      return db as unknown as AppDatabase;
+    }
   })();
   return instance;
 }

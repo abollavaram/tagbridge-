@@ -10,13 +10,15 @@ import { getDatabase } from '@/lib/db';
 import { getDb } from '@/lib/db/client';
 import { accounts, sessions, users, verificationTokens } from '@/lib/db/schema';
 import { authConfig } from './config';
+import { DEMO_EMAILS, providerAvailability } from './providers';
 
 const devLoginSchema = z.object({ email: z.string().email() });
 
 function buildProviders(): Provider[] {
   const providers: Provider[] = [];
+  const available = providerAvailability();
 
-  if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
+  if (available.google && process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
     providers.push(
       Google({
         clientId: process.env.AUTH_GOOGLE_ID,
@@ -28,7 +30,7 @@ function buildProviders(): Provider[] {
 
   // The magic-link provider persists its tokens through the adapter, so it is
   // only offered when there is a real database behind the adapter.
-  if (process.env.EMAIL_SERVER && process.env.EMAIL_FROM && process.env.DATABASE_URL) {
+  if (available.email && process.env.EMAIL_SERVER && process.env.EMAIL_FROM) {
     providers.push(
       Nodemailer({
         server: process.env.EMAIL_SERVER,
@@ -37,21 +39,12 @@ function buildProviders(): Provider[] {
     );
   }
 
-  // Development and end-to-end tests only. Signs in a seeded demo user by
-  // email with no secret, which is exactly why it is refused in production
-  // regardless of how the environment is configured.
-  if (process.env.AUTH_DEV_LOGIN === 'true' && process.env.NODE_ENV !== 'production') {
-    providers.push(devLoginProvider());
-  } else if (process.env.AUTH_DEV_LOGIN === 'true' && process.env.ALLOW_DEV_LOGIN_IN_PROD === 'true') {
-    // Escape hatch for the preview deployment used in the demo. Still refuses
-    // any address that is not a seeded demo account.
-    providers.push(devLoginProvider());
-  }
+  if (available.demo) providers.push(devLoginProvider());
 
   return providers;
 }
 
-const DEMO_EMAILS = new Set(['buyer@example.com', 'sales@example.com', 'admin@example.com']);
+const DEMO_EMAIL_SET = new Set<string>(DEMO_EMAILS);
 
 function devLoginProvider(): Provider {
   return Credentials({
@@ -62,7 +55,7 @@ function devLoginProvider(): Provider {
       const parsed = devLoginSchema.safeParse(raw);
       if (!parsed.success) return null;
       const email = parsed.data.email.toLowerCase();
-      if (!DEMO_EMAILS.has(email)) return null;
+      if (!DEMO_EMAIL_SET.has(email)) return null;
       const db = await getDatabase();
       const found = await db.select().from(users).where(eq(users.email, email)).limit(1);
       const user = found[0];
