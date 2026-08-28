@@ -18,7 +18,7 @@ measured.
 | Live URL | not yet deployed — see [Deploying](#deploying) |
 | Search eval (precision@3, hybrid + rerank vs BM25) | phase 2, not yet measured |
 | Products in catalog | 50 |
-| Tests | 89 unit + integration, 19 end-to-end |
+| Tests | 95 unit + integration, 19 end-to-end |
 | Lighthouse (mobile, product page) | 99 / 100 / 100 / 100 |
 
 ### Lighthouse
@@ -83,13 +83,20 @@ tests/
 
 ### The database is real in every environment
 
-The app talks to Postgres. With `DATABASE_URL` set that is Neon; without it the app
-falls back to [PGlite](https://pglite.dev) — Postgres compiled to WebAssembly, running
-in-process, carrying the *same* migrations and the *same* pgvector extension.
+The app talks to Postgres. With `DATABASE_URL` set that is a hosted Postgres and it is
+durable. Without one, the app restores a build-time snapshot into
+[PGlite](https://pglite.dev) — Postgres compiled to WebAssembly, running in-process,
+carrying the *same* migrations and the *same* pgvector extension.
 
 This is not a mock. `pnpm test` exercises real `tsvector` generation, real HNSW index
-creation, real unique-constraint violations. It also means a clean clone runs the full
-suite, and the end-to-end run boots a seeded storefront, without provisioning anything.
+creation, real unique-constraint violations.
+
+The snapshot is why this deploys with no configuration at all. Booting PGlite, applying
+migrations and seeding takes about ten seconds; restoring a snapshot of the finished
+result takes about one, so a cold start pays a second rather than ten. The cost is that
+the fallback database lives in memory: browsing, pricing and search are identical to
+production, but a cart or an order lasts only as long as the instance that created it.
+Set `DATABASE_URL` and that limitation disappears.
 
 ### Search vector
 
@@ -118,7 +125,7 @@ From a clean clone, with Node 22 and pnpm 10:
 ```bash
 pnpm install
 cp .env.example .env
-pnpm db:setup     # creates and seeds the local PGlite database
+pnpm db:setup     # builds the seeded database snapshot
 pnpm dev          # http://localhost:3000
 ```
 
@@ -126,11 +133,12 @@ No database, no mail server and no OAuth client are required. `pnpm db:setup` pr
 what it seeded; the home page shows the same count.
 
 **Signing in.** With no mail server or Google client configured, the sign-in page offers
-the three seeded demo accounts (`buyer@`, `sales@`, `admin@example.com`) directly. That
-provider accepts no other address and refuses to load at all when `NODE_ENV` is
-production, unless `ALLOW_DEV_LOGIN_IN_PROD` is explicitly set for the public demo.
-Configure `EMAIL_SERVER`/`EMAIL_FROM` or `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET` and the
-real providers appear.
+the three seeded demo accounts (`buyer@`, `sales@`, `admin@example.com`) directly — a
+deployment with no way to sign in is useless, and these accounts hold no real data. The
+provider accepts no other address, withdraws itself as soon as a real provider is
+configured, and can be turned off outright with `AUTH_DEV_LOGIN=false`. Configure
+`EMAIL_SERVER`/`EMAIL_FROM` or `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET` and the real
+providers appear in its place.
 
 ### Verifying
 
@@ -147,15 +155,19 @@ evaluate and a golden query set to evaluate it against.
 
 ## Deploying
 
-Not yet deployed. To deploy:
+The repository deploys with no environment variables set: `vercel.json` runs
+`pnpm db:setup` before the build, which generates a session secret and the database
+snapshot the running app restores.
 
-1. Create a Neon Postgres database and enable `pgvector`.
-2. Import this repository into Vercel.
-3. Set `DATABASE_URL` and `AUTH_SECRET` (`openssl rand -base64 32`). Add
-   `AUTH_DEV_LOGIN=true` and `ALLOW_DEV_LOGIN_IN_PROD=true` if the demo accounts should
-   work on the public URL; otherwise configure a real provider.
-4. Deploy. `vercel.json` runs `pnpm db:setup` before `pnpm build`, which applies
-   migrations and seeds the catalog idempotently.
+For a durable deployment, set two variables and redeploy:
+
+- `DATABASE_URL` — a Postgres connection string. Migrations and seeding run against it
+  at build time, and the in-memory fallback is never used.
+- `AUTH_SECRET` — `openssl rand -base64 32`. Without it a fresh secret is generated on
+  every build, so sessions do not survive a redeploy.
+
+Configuring `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`, or `EMAIL_SERVER` / `EMAIL_FROM`
+alongside `DATABASE_URL`, replaces the demo accounts with real sign-in automatically.
 
 ## What broke and how it was fixed
 

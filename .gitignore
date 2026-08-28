@@ -12,3 +12,5 @@ test-results/
 .env.*.local
 .DS_Store
 .vercel
+lib/db/snapshot.tar.gz
+lib/auth/generated-secret.ts

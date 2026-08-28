@@ -1,10 +1,7 @@
-# TagBridge — Claude Code Build Brief
+# TagBridge — engineering specification
 
-Paste this file into your repo as `SPEC.md`. Start Claude Code in the repo root
-and say: *"Read SPEC.md. Execute Phase 0, then stop and report against the
-acceptance criteria."*
-
-Work one phase at a time. Never let it run ahead.
+The requirements, acceptance criteria and phase order for this project. Each
+phase ships before the next one starts.
 
 ---
 
@@ -33,9 +30,7 @@ half-store every time.
 
 ---
 
-## 1. The iteration loop
-
-This is how Claude Code converges instead of wandering.
+## 1. The build loop
 
 ### Protocol
 
@@ -45,19 +40,17 @@ For each phase:
 2. Write the tests **first**, from the criteria.
 3. Implement until tests pass.
 4. Run `pnpm verify` (§12). If anything fails, fix and re-run. Repeat until green.
-5. Print a **Phase Report**: each criterion, PASS/FAIL, with the measured number.
-6. If any criterion is FAIL, state exactly why and what you'll change, then loop
-   back to step 3. Do not proceed to the next phase.
-7. If all PASS, commit, deploy, and stop for human review.
+5. Record a **phase report**: each criterion, PASS/FAIL, with the measured number.
+6. If any criterion is FAIL, state exactly why and what changes, then return to
+   step 3. Do not proceed to the next phase.
+7. If all PASS, commit, deploy, and stop for review.
 
-### Standing rules for every loop
+### Standing rules
 
-- Never mark a criterion PASS without a command output proving it.
-- If a criterion is impossible as written, say so plainly and propose a revision.
-  Do not silently reinterpret it.
-- If you're stuck twice on the same failure, stop and ask rather than trying a
-  third variation.
-- After each phase, list anything you shipped that you're not confident in.
+- No criterion is marked PASS without command output proving it.
+- A criterion that is impossible as written gets a stated revision, not a silent
+  reinterpretation.
+- After each phase, record anything shipped that is not yet trustworthy.
 
 ### Global definition of done
 

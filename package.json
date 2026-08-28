@@ -20,8 +20,9 @@
     "db:migrate": "tsx lib/db/migrate.ts",
     "db:seed": "tsx lib/db/seed.ts",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e && pnpm audit --prod",
-    "db:setup": "tsx scripts/db-setup.ts",
-    "lighthouse": "tsx scripts/lighthouse.ts"
+    "db:setup": "tsx scripts/generate-auth-secret.ts && tsx scripts/db-setup.ts",
+    "lighthouse": "tsx scripts/lighthouse.ts",
+    "db:snapshot": "tsx scripts/build-db-snapshot.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

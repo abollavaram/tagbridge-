@@ -1,11 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
-const DATA_DIR = mkdtempSync(path.join(tmpdir(), 'tagbridge-commerce-'));
-process.env.PGLITE_DATA_DIR = DATA_DIR;
+// Exercises the commerce modules against the same in-process Postgres the app
+// itself resolves through getDatabase(), rather than a hand-built one.
 delete process.env.DATABASE_URL;
 
 const { getDatabase } = await import('@/lib/db');
@@ -57,10 +54,6 @@ beforeAll(async () => {
   db = await getDatabase();
   await seed(db);
 }, 180_000);
-
-afterAll(() => {
-  rmSync(DATA_DIR, { recursive: true, force: true });
-});
 
 describe('catalog queries', () => {
   it('pages the catalog and reports the true total', async () => {

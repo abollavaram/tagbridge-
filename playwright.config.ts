@@ -20,8 +20,8 @@ export default defineConfig({
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : {
-        // Seeds the local PGlite database, builds, then serves the production
-        // build. The e2e run needs no provisioned database.
+        // Builds the database snapshot, builds the app, then serves the
+        // production build. The e2e run needs no provisioned database.
         command: `pnpm db:setup && pnpm build && pnpm start --port ${PORT}`,
         url: `http://127.0.0.1:${PORT}/api/health`,
         reuseExistingServer: !process.env.CI,
@@ -31,10 +31,6 @@ export default defineConfig({
         env: {
           AUTH_SECRET: process.env.AUTH_SECRET ?? 'e2e-only-secret-not-used-anywhere-else',
           AUTH_DEV_LOGIN: 'true',
-          // `next start` runs as production, so the demo-account provider needs
-          // its explicit escape hatch to be reachable at all.
-          ALLOW_DEV_LOGIN_IN_PROD: 'true',
-          PGLITE_DATA_DIR: '.pglite',
           LOG_LEVEL: 'warn',
         },
       },
