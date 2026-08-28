@@ -9,15 +9,30 @@ retrieval with a protocol and vendor synonym layer, a quote path because industr
 buying is quote-shaped rather than cart-shaped, and subscription-to-ERP sync that
 survives the failure modes real integrations hit.
 
-**Status: phase 0 of 5 complete.** The search evaluation — the number this project
-exists to produce — lands in phase 2 and is not claimed here until it is measured.
+**Status: phases 0 and 1 of 5 complete.** The search evaluation — the number this
+project exists to produce — lands in phase 2 and is not claimed here until it is
+measured.
 
 | | |
 |---|---|
 | Live URL | not yet deployed — see [Deploying](#deploying) |
 | Search eval (precision@3, hybrid + rerank vs BM25) | phase 2, not yet measured |
 | Products in catalog | 50 |
-| Tests | 44 unit + integration, 9 end-to-end |
+| Tests | 89 unit + integration, 19 end-to-end |
+| Lighthouse (mobile, product page) | 99 / 100 / 100 / 100 |
+
+### Lighthouse
+
+Mobile preset, measured against the production build by `pnpm lighthouse`, which
+fails if any page misses a threshold and runs as its own CI job.
+
+| Page | Perf | A11y | Best Prac. | SEO | LCP | CLS | TBT |
+|---|---|---|---|---|---|---|---|
+| Home | 99 | 100 | 100 | 100 | 1892 ms | 0 | 90 ms |
+| Catalog | 98 | 100 | 100 | 100 | 2078 ms | 0 | 115 ms |
+| Product | 99 | 100 | 100 | 100 | 1568 ms | 0 | 130 ms |
+
+TBT is the lab proxy for INP; Lighthouse cannot measure INP without field data.
 
 ## What is built
 
@@ -26,25 +41,44 @@ model in Drizzle with migrations, a 50-product catalog written for this project,
 a 148-edge synonym graph, Auth.js v5 with role-based authorization, structured
 logging, a health endpoint, and CI that gates on every check.
 
-Phases 1–5 (catalog and cart, the search pipeline, quotes and the agent, subscription
-sync, and the agent-native UCP/MCP layer) are specified in [`SPEC.md`](SPEC.md) and
-not yet built.
+**Phase 1 — catalog and cart.** Faceted catalog by category, protocol, vendor and
+licence type; product pages with variants and their full quantity ladders; a cart;
+and two checkout paths — a purchase order path that creates a real order with no
+payment taken, and a Stripe card path.
+
+Phases 2–5 (the search pipeline, quotes and the agent, subscription sync, and the
+agent-native UCP/MCP layer) are specified in [`SPEC.md`](SPEC.md) and not yet built.
+
+### Pricing is computed in one place
+
+`lib/commerce/pricing.ts` resolves every price from the variant's ladder in
+`price_tiers`, on the server. The cart stores quantities and nothing else, so a
+price cannot go stale between adding an item and checking out — change a ladder and
+the open cart re-prices itself, which is covered by a test.
+
+The request schemas are `.strict()` and carry no price field, and
+`containsPriceField()` refuses anything price-shaped at the trust boundary. Today
+that guards the cart; from phase 3 it is what stops a model setting a price.
 
 ## Architecture
 
 ```
 app/
-  (shop) (account) (admin)      route groups; middleware gates the last two
+  (shop)                        catalog · product · cart · checkout · confirmation
+  (account) (admin)             middleware gates both; pages re-check the session
   api/health                    DB reachability, provider configuration
   api/auth/[...nextauth]        Auth.js route handler
 lib/
   db/       schema · migrations · catalog · synonyms · seed · PGlite harness
   auth/     edge-safe config · providers + adapter · role helpers · guards
   telemetry logger with declared PII redaction
+  commerce/ pricing · catalog queries · cart · cart session · orders · payments
 tests/
-  unit/         catalog integrity, price ladders, synonym graph, roles, env
-  integration/  migrations, seed idempotency, FTS vector, constraints
-  e2e/          home, health, auth redirects, role gating, sign-out
+  unit/         catalog integrity, price ladders, pricing engine, synonyms, roles, env
+  integration/  migrations, seed idempotency, FTS vector, constraints, catalog,
+                cart re-pricing, PO checkout, order numbering, audit rows
+  e2e/          home, health, auth and role gating, catalog facets, price ladder,
+                cart, PO checkout, confirmation
 ```
 
 ### The database is real in every environment
@@ -144,6 +178,25 @@ URL that does not resolve. It only surfaced as a log line, because the test data
 already been created with the extension present. Adding the package to
 `serverExternalPackages` fixed it; deleting `.pglite` and re-running the e2e suite from
 an empty database confirmed it.
+
+**A random order number is not a unique order number.** `TB-YYYYMM-` plus six random
+hex characters looks safe and is not: at a few thousand orders a collision is more
+likely than not, and `orders.number` is unique, so the failure would surface as a
+rejected order at checkout. The test that generated 5,000 numbers caught it on the
+first run. Order numbers now come from a Postgres sequence — unique by construction
+rather than by luck.
+
+**The product page's meta description never reached `<head>`.** Lighthouse scored the
+page 90 on SEO while `curl` clearly showed the tag. Next streams metadata into the
+body for a dynamically rendered page and hydration relocates it, so anything that does
+not run JavaScript — crawlers included — never sees it. Both public pages are now
+prerendered and revalidated, which put the description in `<head>` and took SEO to 100.
+
+**Two Next build workers raced for one PGlite directory.** After the home page became
+prerendered, a build failed on a random product page, then passed on a retry. PGlite
+holds an exclusive lock on its data directory and Next spawns several workers for
+static generation. The build now uses a single worker when — and only when — there is
+no `DATABASE_URL`, because real Postgres has no such problem.
 
 **Five advisories in the production dependency tree.** `postcss` (three, up to high) came
 in transitively through Next, and `nodemailer` (high) was pinned back to v8 to satisfy
