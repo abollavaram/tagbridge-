@@ -2,11 +2,14 @@
  * Generates the session-signing secret used when AUTH_SECRET is not set.
  *
  * A deployment with no environment variables still has to sign session cookies
- * with something unpredictable. This writes a random constant at build time
- * into a module only the server and edge bundles import. The file is never
- * committed, so every build that lacks AUTH_SECRET gets a fresh one and
- * existing sessions stop validating — which is the correct trade for a demo
- * and the reason a real deployment should set AUTH_SECRET.
+ * with something unpredictable. This writes a random constant into a module
+ * only the server and edge bundles import. The file is never committed, so
+ * every environment that lacks AUTH_SECRET gets its own and sessions do not
+ * survive a redeploy — the correct trade for a demo, and the reason a real
+ * deployment sets AUTH_SECRET.
+ *
+ * Runs on `postinstall` rather than as a build step: the module has to exist
+ * before anything typechecks, and CI typechecks straight after installing.
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
