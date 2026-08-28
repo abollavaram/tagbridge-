@@ -20,6 +20,7 @@ async function main(): Promise<void> {
   const postgres = (await import('postgres')).default;
   const schema = await import('@/lib/db/schema');
   const { seed } = await import('@/lib/db/seed');
+  const { buildProductIndex } = await import('@/lib/search/indexer');
 
   console.log('target: DATABASE_URL');
   const client = postgres(process.env.DATABASE_URL, { max: 1 });
@@ -27,10 +28,12 @@ async function main(): Promise<void> {
   await db.execute(sql`CREATE EXTENSION IF NOT EXISTS vector;`);
   await migrate(db, { migrationsFolder: 'lib/db/migrations' });
   const result = await seed(db as never);
+  const index = await buildProductIndex(db as never);
   await client.end();
   console.log(
     `seeded ${result.products} products, ${result.variants} variants, ` +
-      `${result.priceTiers} price tiers, ${result.synonyms} synonyms, ${result.users} users`,
+      `${result.priceTiers} price tiers, ${result.synonyms} synonyms, ${result.users} users, ` +
+      `${index.indexed} embeddings via ${index.embedder}`,
   );
 }
 

@@ -39,6 +39,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <ul className="flex items-center gap-6 text-sm">
               <li>
+                <Link href="/search" className="hover:underline">
+                  Search
+                </Link>
+              </li>
+              <li>
                 <Link href="/products" className="hover:underline">
                   Catalog
                 </Link>
