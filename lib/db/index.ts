@@ -32,12 +32,18 @@ export function getDatabase(): Promise<AppDatabase> {
       const { db } = await restoreFromSnapshot();
       return db as unknown as AppDatabase;
     } catch {
-      // No snapshot yet — a clean clone running the tests before any build
-      // step. Construct the same database the long way instead of failing.
+      // No snapshot yet — a clean clone running the tests or `pnpm dev` before
+      // any build step. Construct the same database the long way rather than
+      // failing, including the dense index: seeding alone leaves the vector
+      // leg of search silently returning nothing, which is worse than an error
+      // because everything still appears to work.
       const { db } = await createPgliteHarness();
+      const built = db as unknown as AppDatabase;
       const { seed } = await import('./seed');
-      await seed(db as unknown as AppDatabase);
-      return db as unknown as AppDatabase;
+      await seed(built);
+      const { buildProductIndex } = await import('@/lib/search/indexer');
+      await buildProductIndex(built);
+      return built;
     }
   })();
   return instance;

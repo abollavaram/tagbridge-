@@ -89,11 +89,16 @@ export const products = pgTable(
      * Weighted lexeme vector maintained by Postgres. Name and SKU carry weight
      * A so an exact part number outranks a description that merely mentions it;
      * protocols and vendor names carry B; prose carries C. Built by
-     * `tagbridge_product_search_text`, which is declared in migration 0000 —
-     * an index expression has to be IMMUTABLE, and `array_to_string` is not.
+     * `tagbridge_product_search_text`, declared in migration 0000 and widened
+     * in 0003 — an index expression has to be IMMUTABLE, and
+     * `array_to_string` is not.
+     *
+     * Spec values are indexed at weight B alongside protocols and vendors:
+     * that is where compatibility facts live ("SAML, OIDC", "hot standby"),
+     * and indexing only the keys made them unfindable.
      */
     searchVector: tsvector('search_vector').generatedAlwaysAs(
-      sql`tagbridge_product_search_text(name, sku, description, protocols, vendor_compat)`,
+      sql`tagbridge_product_search_text(name, sku, description, protocols, vendor_compat, specs)`,
     ),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

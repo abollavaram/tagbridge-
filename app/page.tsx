@@ -67,14 +67,18 @@ export default async function HomePage() {
           </div>
           <div className="rounded-lg border border-ink-100 p-4 dark:border-ink-700">
             <dt className="text-sm text-ink-500">Phase</dt>
-            <dd className="mt-1 font-mono text-3xl">1</dd>
+            <dd className="mt-1 font-mono text-3xl">2</dd>
           </div>
         </dl>
         <p className="text-sm text-ink-500">
-          Phase 1 adds the catalog, tiered pricing, the cart and both checkout paths.
-          The search pipeline — the part this project exists to demonstrate — is phase 2.
+          Phase 2 adds the search pipeline this project exists to demonstrate: hybrid
+          retrieval over BM25 and pgvector, a protocol and vendor synonym layer, and a
+          100-query evaluation set that gates the build.
         </p>
-        <p>
+        <p className="flex gap-4">
+          <Link href="/search" className="underline">
+            Try the search
+          </Link>
           <Link href="/products" className="underline">
             Browse the catalog
           </Link>
