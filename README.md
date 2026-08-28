@@ -24,13 +24,14 @@ measured.
 ### Lighthouse
 
 Mobile preset, measured against the production build by `pnpm lighthouse`, which
-fails if any page misses a threshold and runs as its own CI job.
+fails if any page misses a threshold and runs as its own CI job. Each page is
+warmed and then measured three times; the table reports the median of each metric.
 
 | Page | Perf | A11y | Best Prac. | SEO | LCP | CLS | TBT |
 |---|---|---|---|---|---|---|---|
-| Home | 99 | 100 | 100 | 100 | 1892 ms | 0 | 90 ms |
-| Catalog | 98 | 100 | 100 | 100 | 2078 ms | 0 | 115 ms |
-| Product | 99 | 100 | 100 | 100 | 1568 ms | 0 | 130 ms |
+| Home | 99 | 100 | 100 | 100 | 1889 ms | 0 | 106 ms |
+| Catalog | 99 | 100 | 100 | 100 | 1799 ms | 0 | 112 ms |
+| Product | 99 | 100 | 100 | 100 | 1868 ms | 0 | 98 ms |
 
 TBT is the lab proxy for INP; Lighthouse cannot measure INP without field data.
 
@@ -209,6 +210,22 @@ prerendered, a build failed on a random product page, then passed on a retry. PG
 holds an exclusive lock on its data directory and Next spawns several workers for
 static generation. The build now uses a single worker when — and only when — there is
 no `DATABASE_URL`, because real Postgres has no such problem.
+
+**A single Lighthouse run is not a measurement.** The gate passed locally and failed
+in CI on total blocking time — 356 ms against a 200 ms threshold, on the home page,
+while a heavier page in the same run read 73 ms. The page was not the problem: it was
+simply the first one measured after the server booted, on a shared two-core runner.
+The runner now warms each page and takes the median of three runs, the way Lighthouse
+CI aggregates. The thresholds did not move.
+
+**A generated file that generated nothing.** The session secret module is written by a
+script and gitignored, so CI — which typechecks immediately after installing — found no
+module and failed with `TS2307`. It had only ever passed locally because an earlier
+build had left the file behind. Generating it on `postinstall` puts it in place
+everywhere before anything reads it. The first version of that script also blanked the
+constant whenever `AUTH_SECRET` happened to be set in the environment, which made the
+result depend on which command ran last: an end-to-end run that set it in a subprocess
+left the next plain build with no secret at all.
 
 **Five advisories in the production dependency tree.** `postcss` (three, up to high) came
 in transitively through Next, and `nodemailer` (high) was pinned back to v8 to satisfy

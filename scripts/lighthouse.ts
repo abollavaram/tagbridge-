@@ -3,6 +3,13 @@
  * thresholds the spec sets. Exits non-zero if any page misses one, so it can
  * gate a build.
  *
+ * Each page is warmed with a plain request and then measured several times,
+ * reporting the median of each metric. Lab metrics — total blocking time
+ * especially — are noisy on a shared two-core CI runner: the first page
+ * measured after the server boots once read 356 ms against 73 ms for a heavier
+ * page in the same run. Medians make the gate reflect the page rather than the
+ * runner, without moving the thresholds.
+ *
  * Usage: pnpm lighthouse [baseUrl]
  */
 import { spawn } from 'node:child_process';
@@ -26,6 +33,34 @@ const THRESHOLDS = {
 } as const;
 
 const VITALS = { lcp: 2500, cls: 0.1, tbt: 200 };
+
+/** Lighthouse CI aggregates repeated runs the same way. */
+const RUNS = Math.max(1, Number(process.env.LH_RUNS ?? 3));
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[middle] as number;
+  return ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2;
+}
+
+interface Measured {
+  performance: number;
+  accessibility: number;
+  'best-practices': number;
+  seo: number;
+  lcp: number;
+  cls: number;
+  tbt: number;
+}
+
+async function warmUp(url: string): Promise<void> {
+  try {
+    await fetch(url, { cache: 'no-store' });
+  } catch {
+    // The run itself will report an unreachable server far more clearly.
+  }
+}
 
 interface Report {
   categories: Record<string, { score: number | null }>;
@@ -71,19 +106,34 @@ async function main(): Promise<void> {
 
   try {
     for (const page of PAGES) {
-      const out = path.join(dir, `${page.name}.json`);
-      await runLighthouse(`${BASE}${page.path}`, out);
-      const report = JSON.parse(readFileSync(out, 'utf8')) as Report;
+      const url = `${BASE}${page.path}`;
+      await warmUp(url);
+
+      const runs: Measured[] = [];
+      for (let run = 0; run < RUNS; run += 1) {
+        const out = path.join(dir, `${page.name}-${run}.json`);
+        await runLighthouse(url, out);
+        const report = JSON.parse(readFileSync(out, 'utf8')) as Report;
+        runs.push({
+          performance: pct(report.categories.performance?.score ?? null),
+          accessibility: pct(report.categories.accessibility?.score ?? null),
+          'best-practices': pct(report.categories['best-practices']?.score ?? null),
+          seo: pct(report.categories.seo?.score ?? null),
+          lcp: Math.round(report.audits['largest-contentful-paint']?.numericValue ?? 0),
+          cls: report.audits['cumulative-layout-shift']?.numericValue ?? 0,
+          tbt: Math.round(report.audits['total-blocking-time']?.numericValue ?? 0),
+        });
+      }
 
       const scores = {
-        performance: pct(report.categories.performance?.score ?? null),
-        accessibility: pct(report.categories.accessibility?.score ?? null),
-        'best-practices': pct(report.categories['best-practices']?.score ?? null),
-        seo: pct(report.categories.seo?.score ?? null),
+        performance: Math.round(median(runs.map((r) => r.performance))),
+        accessibility: Math.round(median(runs.map((r) => r.accessibility))),
+        'best-practices': Math.round(median(runs.map((r) => r['best-practices']))),
+        seo: Math.round(median(runs.map((r) => r.seo))),
       };
-      const lcp = Math.round(report.audits['largest-contentful-paint']?.numericValue ?? 0);
-      const cls = Number((report.audits['cumulative-layout-shift']?.numericValue ?? 0).toFixed(3));
-      const tbt = Math.round(report.audits['total-blocking-time']?.numericValue ?? 0);
+      const lcp = Math.round(median(runs.map((r) => r.lcp)));
+      const cls = Number(median(runs.map((r) => r.cls)).toFixed(3));
+      const tbt = Math.round(median(runs.map((r) => r.tbt)));
 
       for (const [key, min] of Object.entries(THRESHOLDS)) {
         const value = scores[key as keyof typeof scores];
@@ -114,7 +164,9 @@ async function main(): Promise<void> {
     rmSync(dir, { recursive: true, force: true });
   }
 
-  console.log(`\nLighthouse (mobile preset) against ${BASE}\n`);
+  console.log(
+    `\nLighthouse (mobile preset) against ${BASE} — median of ${RUNS} run${RUNS === 1 ? '' : 's'}\n`,
+  );
   console.log('| Page | Perf | A11y | Best Prac. | SEO | LCP | CLS | TBT |');
   console.log('|---|---|---|---|---|---|---|---|');
   for (const row of rows) console.log(row);
