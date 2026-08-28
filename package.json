@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "postinstall": "tsx scripts/generate-auth-secret.ts",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
