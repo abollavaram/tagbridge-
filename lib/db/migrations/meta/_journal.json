@@ -36,6 +36,13 @@
       "when": 1787961975102,
       "tag": "0004_knowledge_graph",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787966829645,
+      "tag": "0005_sync_ordering_and_drift",
+      "breakpoints": true
     }
   ]
 }

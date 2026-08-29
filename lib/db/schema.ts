@@ -431,6 +431,14 @@ export const subscriptions = pgTable(
     status: subscriptionStatusEnum('status').notNull(),
     currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Provider timestamp of the newest event already applied to this row.
+     *
+     * Distinct from `updatedAt`, which is when *we* wrote. Ordering is decided
+     * on this: an event that occurred before it has been superseded and is
+     * acknowledged without being applied, however late it arrives.
+     */
+    lastEventAt: timestamp('last_event_at', { withTimezone: true }),
   },
   (t) => [index('subscriptions_user_idx').on(t.userId)],
 );
@@ -446,6 +454,9 @@ export const erpSyncRecords = pgTable(
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
     state: syncStateEnum('state').notNull().default('pending'),
     driftDetected: boolean('drift_detected').notNull().default(false),
+    /** Which check failed, so the dashboard can say more than "something is wrong". */
+    driftReason: text('drift_reason'),
+    driftDetectedAt: timestamp('drift_detected_at', { withTimezone: true }),
   },
   (t) => [uniqueIndex('erp_sync_records_subscription_uq').on(t.subscriptionId)],
 );

@@ -3,5 +3,11 @@
   "framework": "nextjs",
   "buildCommand": "pnpm db:setup && pnpm build",
   "installCommand": "pnpm install --frozen-lockfile",
-  "regions": ["iad1"]
+  "regions": ["iad1"],
+  "crons": [
+    {
+      "path": "/api/cron/reconcile",
+      "schedule": "17 3 * * *"
+    }
+  ]
 }

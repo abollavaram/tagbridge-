@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { requireAdmin } from '@/lib/auth/guards';
 
 export const metadata = { title: 'Administration' };
@@ -13,9 +14,22 @@ export default async function AdminPage() {
       <p className="text-ink-700 dark:text-ink-300">
         Signed in as <span className="font-mono">{viewer.email}</span>.
       </p>
+      <nav aria-label="Administration areas">
+        <ul className="space-y-2">
+          <li>
+            <Link href="/admin/sync" className="font-medium underline">
+              Subscription sync
+            </Link>
+            <span className="text-ink-500">
+              {' '}
+              — event throughput, the dead-letter queue, and drift between the billing
+              provider and the ERP.
+            </span>
+          </li>
+        </ul>
+      </nav>
       <p className="text-sm text-ink-500">
-        Catalog administration lands in phase 1, quote approval in phase 3 and the sync
-        dashboard in phase 4.
+        Catalog administration and quote approval land alongside the rest of phase 3.
       </p>
     </div>
   );

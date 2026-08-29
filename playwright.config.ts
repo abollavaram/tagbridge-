@@ -32,6 +32,10 @@ export default defineConfig({
           AUTH_SECRET: process.env.AUTH_SECRET ?? 'e2e-only-secret-not-used-anywhere-else',
           AUTH_DEV_LOGIN: 'true',
           LOG_LEVEL: 'warn',
+          // The reconciliation endpoint refuses to run unauthenticated. Giving
+          // the e2e server a real secret exercises the same check production
+          // uses, rather than a development escape hatch.
+          CRON_SECRET: 'e2e-cron-secret',
         },
       },
 });
