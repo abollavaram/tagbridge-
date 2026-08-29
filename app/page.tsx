@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { MEASURED, PHASES, PHASES_SHIPPED, PHASES_TOTAL } from '@/lib/build-status';
 import { sql } from 'drizzle-orm';
 import { getDatabase } from '@/lib/db';
 import { firstRow } from '@/lib/db/rows';
@@ -56,31 +57,60 @@ export default async function HomePage() {
         <h2 id="status" className="text-sm font-semibold uppercase tracking-widest text-ink-500">
           Build status
         </h2>
-        <dl className="grid gap-4 sm:grid-cols-3">
+        <dl className="grid gap-4 sm:grid-cols-4">
           <div className="rounded-lg border border-ink-100 p-4 dark:border-ink-700">
-            <dt className="text-sm text-ink-500">Catalog products seeded</dt>
+            <dt className="text-sm text-ink-500">Products seeded</dt>
             <dd className="mt-1 font-mono text-3xl">{summary.products}</dd>
           </div>
           <div className="rounded-lg border border-ink-100 p-4 dark:border-ink-700">
-            <dt className="text-sm text-ink-500">Categories</dt>
-            <dd className="mt-1 font-mono text-3xl">{summary.categories}</dd>
+            <dt className="text-sm text-ink-500">Phases shipped</dt>
+            <dd className="mt-1 font-mono text-3xl">
+              {PHASES_SHIPPED}/{PHASES_TOTAL}
+            </dd>
           </div>
           <div className="rounded-lg border border-ink-100 p-4 dark:border-ink-700">
-            <dt className="text-sm text-ink-500">Phase</dt>
-            <dd className="mt-1 font-mono text-3xl">2</dd>
+            <dt className="text-sm text-ink-500">Search precision@3</dt>
+            <dd className="mt-1 font-mono text-3xl">
+              {MEASURED.searchPrecisionAt3.toFixed(2)}
+            </dd>
+          </div>
+          <div className="rounded-lg border border-ink-100 p-4 dark:border-ink-700">
+            <dt className="text-sm text-ink-500">Tests passing</dt>
+            <dd className="mt-1 font-mono text-3xl">{MEASURED.tests}</dd>
           </div>
         </dl>
-        <p className="text-sm text-ink-500">
-          Phase 2 adds the search pipeline this project exists to demonstrate: hybrid
-          retrieval over BM25 and pgvector, a protocol and vendor synonym layer, and a
-          100-query evaluation set that gates the build.
+
+        <p className="max-w-3xl text-sm text-ink-500">
+          Precision@3 is measured over {MEASURED.searchQueries} queries with known answers,
+          split evenly across the four ways engineers actually search: part number,
+          described problem, vendor synonym, and compatibility question. The number is
+          reproducible from the repository, not an estimate.
         </p>
-        <p className="flex gap-4">
+
+        <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {PHASES.map((phase) => (
+            <li key={phase.number} className="flex items-baseline gap-2 text-sm">
+              <span
+                aria-hidden="true"
+                className="inline-block size-2 shrink-0 translate-y-px rounded-full bg-signal-600"
+              />
+              <Link href={phase.proof} className="underline">
+                {phase.name}
+              </Link>
+              <span className="sr-only">shipped</span>
+            </li>
+          ))}
+        </ul>
+
+        <p className="flex flex-wrap gap-4">
           <Link href="/search" className="underline">
             Try the search
           </Link>
           <Link href="/products" className="underline">
             Browse the catalog
+          </Link>
+          <Link href="/graph" className="underline">
+            See the knowledge graph
           </Link>
         </p>
       </section>

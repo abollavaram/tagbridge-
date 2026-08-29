@@ -37,9 +37,7 @@ export default async function AdminPage() {
           </li>
         </ul>
       </nav>
-      <p className="text-sm text-ink-500">
-        Catalog administration lands alongside the rest of phase 3.
-      </p>
+
     </div>
   );
 }
