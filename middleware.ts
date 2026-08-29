@@ -4,7 +4,11 @@ import { authConfig } from '@/lib/auth/config';
 
 const { auth } = NextAuth(authConfig);
 
-const PROTECTED_PREFIXES = ['/account', '/quotes', '/orders'];
+// `/approvals` is signed-in-only here and sales-or-admin in the page itself.
+// It deliberately sits outside `/admin`: the admin area is admin-only, but
+// approving a quote is a sales job, and widening the admin gate to let sales
+// in would quietly widen it for every other admin page too.
+const PROTECTED_PREFIXES = ['/account', '/quotes', '/orders', '/approvals'];
 const ADMIN_PREFIXES = ['/admin'];
 
 /**
@@ -32,5 +36,11 @@ export default auth((req) => {
 });
 
 export const config = {
-  matcher: ['/account/:path*', '/quotes/:path*', '/orders/:path*', '/admin/:path*'],
+  matcher: [
+    '/account/:path*',
+    '/quotes/:path*',
+    '/orders/:path*',
+    '/approvals/:path*',
+    '/admin/:path*',
+  ],
 };

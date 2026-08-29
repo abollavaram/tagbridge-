@@ -17,6 +17,15 @@ export default async function AdminPage() {
       <nav aria-label="Administration areas">
         <ul className="space-y-2">
           <li>
+            <Link href="/approvals" className="font-medium underline">
+              Quote approval
+            </Link>
+            <span className="text-ink-500">
+              {' '}
+              — every quote the assistant drafts, waiting on a human decision.
+            </span>
+          </li>
+          <li>
             <Link href="/admin/sync" className="font-medium underline">
               Subscription sync
             </Link>
@@ -29,7 +38,7 @@ export default async function AdminPage() {
         </ul>
       </nav>
       <p className="text-sm text-ink-500">
-        Catalog administration and quote approval land alongside the rest of phase 3.
+        Catalog administration lands alongside the rest of phase 3.
       </p>
     </div>
   );

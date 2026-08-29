@@ -43,6 +43,13 @@
       "when": 1787966829645,
       "tag": "0005_sync_ordering_and_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787966830645,
+      "tag": "0006_quote_number_seq",
+      "breakpoints": true
     }
   ]
 }
