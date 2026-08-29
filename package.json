@@ -26,7 +26,8 @@
     "db:snapshot": "tsx scripts/build-db-snapshot.ts",
     "eval:search": "tsx evals/search/run.ts",
     "eval:agent": "tsx evals/agent/run.ts",
-    "mcp": "tsx scripts/mcp-stdio.ts"
+    "mcp": "tsx scripts/mcp-stdio.ts",
+    "mcp:transcript": "tsx scripts/mcp-transcript.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

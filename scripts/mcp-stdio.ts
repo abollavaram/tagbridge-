@@ -46,6 +46,17 @@ async function main(): Promise<void> {
 
   const rl = createInterface({ input: process.stdin, terminal: false });
 
+  // A client disconnecting closes stdin. Without this the process lingers:
+  // PGlite holds the event loop open, so nothing ever ends the run, and
+  // Claude Desktop leaves a zombie behind on every reconnect. Exiting on the
+  // signals too, because a supervisor that asks politely deserves an answer.
+  const shutdown = (code: number) => {
+    rl.close();
+    process.exit(code);
+  };
+  process.on('SIGINT', () => shutdown(0));
+  process.on('SIGTERM', () => shutdown(0));
+
   for await (const line of rl) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
@@ -72,6 +83,9 @@ async function main(): Promise<void> {
     // still be a message the client has to parse.
     if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
   }
+
+  // stdin ended: the client is gone.
+  shutdown(0);
 }
 
 main().catch((error) => {
