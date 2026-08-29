@@ -246,3 +246,33 @@ describe('PII discipline', () => {
     expect(redactPii(once)).toBe(once);
   });
 });
+
+describe('the price guard knows the protocols’ vocabulary, not just ours', () => {
+  it('refuses ACP’s unit_amount on an item', () => {
+    // The exact shape an ACP client sends. This slipped through once, and the
+    // caller got "unrecognized key" instead of being told prices are ours.
+    expect(
+      checkNoModelPrice({
+        line_items: [{ item: { id: 'v1', unit_amount: 100 }, quantity: 1 }],
+      }),
+    ).not.toBeNull();
+  });
+
+  it('refuses a presentment_amount', () => {
+    expect(checkNoModelPrice({ totals: [{ presentment_amount: 5 }] })).not.toBeNull();
+  });
+
+  it('refuses a total_amount and a subtotal_amount', () => {
+    expect(checkNoModelPrice({ total_amount: 1 })).not.toBeNull();
+    expect(checkNoModelPrice({ subtotal_amount: 1 })).not.toBeNull();
+  });
+
+  it('still allows the fields a caller is entitled to send', () => {
+    expect(
+      checkNoModelPrice({
+        line_items: [{ item: { id: 'v1' }, quantity: 3 }],
+        currency: 'USD',
+      }),
+    ).toBeNull();
+  });
+});

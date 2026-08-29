@@ -109,6 +109,18 @@ const PRICE_KEYS = [
   'price',
   'unitprice',
   'unitpricecents',
+  // The agent-native protocols spell money differently from this codebase.
+  // ACP's Item carries `unit_amount`, its Total carries `amount` and
+  // `presentment_amount`, and a caller sending one of those is asserting a
+  // price just as surely as one sending `unitPriceCents`. Missing them meant
+  // the refusal came back as a generic unknown-key error, which tells a
+  // client nothing about why. An e2e test against the real endpoint caught it.
+  'unitamount',
+  'lineamount',
+  'presentmentamount',
+  'totalamount',
+  'subtotalamount',
+  'discountamount',
   'linetotal',
   'linetotalcents',
   'total',
