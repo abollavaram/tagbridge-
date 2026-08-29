@@ -29,6 +29,13 @@
       "when": 1787937299156,
       "tag": "0003_index_spec_values",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787961975102,
+      "tag": "0004_knowledge_graph",
+      "breakpoints": true
     }
   ]
 }

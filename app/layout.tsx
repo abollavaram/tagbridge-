@@ -49,6 +49,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </Link>
               </li>
               <li>
+                <Link href="/graph" className="hover:underline">
+                  Graph
+                </Link>
+              </li>
+              <li>
                 <Link href="/cart" className="hover:underline">
                   Cart
                 </Link>

@@ -26,6 +26,7 @@ const MODES: { mode: SearchMode; label: string }[] = [
   { mode: 'bm25', label: 'BM25 only' },
   { mode: 'bm25-expanded', label: 'BM25 + synonyms' },
   { mode: 'vector', label: 'Vector only' },
+  { mode: 'graph', label: 'Graph only' },
   { mode: 'hybrid', label: 'Hybrid (RRF)' },
   { mode: 'hybrid-rerank', label: 'Hybrid + rerank' },
 ];

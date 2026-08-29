@@ -7,6 +7,7 @@ import { DEFAULT_RRF_K, reciprocalRankFusion, type FusionInput } from './fusion'
 import { classifyIntent, type Intent, type IntentResult } from './intent';
 import { normalizeQuery, type NormalizedQuery } from './normalize';
 import { DeterministicReranker, type RerankCandidate, type RerankedResult, type Reranker } from './rerank';
+import { graphSearch } from '@/lib/graph/walk';
 import { bm25Search, naiveBm25Search, partNumberSearch, vectorSearch } from './retrievers';
 import { SynonymGraph } from './synonym-graph';
 
@@ -32,6 +33,7 @@ export type SearchMode =
   | 'bm25'
   | 'bm25-expanded'
   | 'vector'
+  | 'graph'
   | 'hybrid'
   | 'hybrid-rerank';
 
@@ -40,6 +42,7 @@ const SINGLE_LEG: ReadonlySet<SearchMode> = new Set([
   'bm25',
   'bm25-expanded',
   'vector',
+  'graph',
 ]);
 
 export interface SearchOptions {
@@ -162,15 +165,22 @@ export async function search(
     };
   }
 
-  const needsLexical = mode !== 'vector';
-  const needsDense = mode !== 'bm25' && mode !== 'bm25-expanded' && mode !== 'bm25-naive';
+  const needsLexical = mode !== 'vector' && mode !== 'graph';
+  const needsDense =
+    mode !== 'bm25' && mode !== 'bm25-expanded' && mode !== 'bm25-naive' && mode !== 'graph';
+  // Measured twice as part of the hybrid — as a fusion leg and as a reranker
+  // feature — and both were neutral on precision@3 and worse on MRR. The
+  // walk stays as its own mode so the evaluation keeps reporting that
+  // honestly, and because the graph earns its place elsewhere: explaining a
+  // result, and the /graph view.
+  const needsGraph = mode === 'graph';
   // Neither baseline gets the synonym layer or exact part-number lookup.
   const usesExpansion = mode !== 'bm25' && mode !== 'bm25-naive';
   const lexicalTerms = usesExpansion ? expansion.terms : normalized.tokens;
 
   const embedder = needsDense ? deps.embedder ?? (await getEmbedder()) : null;
 
-  const [lexical, dense, exact] = await Promise.all([
+  const [lexical, dense, exact, walked] = await Promise.all([
     needsLexical
       ? mode === 'bm25-naive'
         ? naiveBm25Search(normalized.tokens, candidateCount)
@@ -182,12 +192,22 @@ export async function search(
     needsLexical && usesExpansion
       ? partNumberSearch(normalized.partNumbers, Math.min(candidateCount, 10))
       : Promise.resolve([]),
+    needsGraph
+      ? graphSearch(expansion.terms, { limit: candidateCount })
+      : Promise.resolve([]),
   ]);
+
+
 
   // Single-leg modes report that leg directly, so the eval measures the
   // retriever rather than the fusion of one list with itself.
   if (SINGLE_LEG.has(mode)) {
-    const source = mode === 'vector' ? dense : mergeExact(exact, lexical);
+    const source =
+      mode === 'vector'
+        ? dense
+        : mode === 'graph'
+          ? walked.map((h) => ({ id: h.productId, sku: h.sku, name: h.name, slug: h.slug, score: h.score }))
+          : mergeExact(exact, lexical);
     const detail = await loadCandidates(source.map((r) => r.id));
     return {
       query: rawQuery,
