@@ -22,6 +22,7 @@ type QuoteStatus = (typeof QUOTE_STATUSES)[number];
 import { canApproveQuotes } from '@/lib/auth/roles';
 import { search } from '@/lib/search/pipeline';
 import { writeAudit } from './audit';
+import { emailConfigured, sendQuoteEmail } from '@/lib/commerce/mail';
 import { wrapUntrusted } from './guardrails';
 import type { AgentTool } from './types';
 
@@ -582,6 +583,32 @@ export const sendQuoteEmailTool: AgentTool<
         detail: `quote ${quote.number} is ${quote.status}; only an approved quote is emailed`,
       };
     }
+
+    // Email delivery is not configured on this deployment, and saying
+    // otherwise would be the worst kind of bug in a project whose argument is
+    // honest measurement: the model would tell a customer their quote was on
+    // its way, and the audit log — the record you reach for in a dispute —
+    // would agree. An audit log that records things that did not happen is
+    // worse than no audit log.
+    if (!emailConfigured()) {
+      await writeAudit({
+        actor: `agent:${context.runId}`,
+        action: 'quote.send.unavailable',
+        resource: `quote:${quote.id}`,
+        before: null,
+        after: { number: quote.number, reason: 'no mail transport configured' },
+      });
+      return {
+        quoteId: quote.id,
+        sent: false,
+        heldForApproval: false,
+        detail:
+          `quote ${quote.number} is approved and ready, but email delivery is not ` +
+          'configured on this deployment, so nothing was sent',
+      };
+    }
+
+    await sendQuoteEmail({ quoteNumber: quote.number, quoteId: quote.id });
 
     await writeAudit({
       actor: `agent:${context.runId}`,

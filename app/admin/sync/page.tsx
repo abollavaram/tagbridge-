@@ -58,10 +58,15 @@ function when(value: Date | null): string {
   return value ? new Date(value).toISOString().replace('T', ' ').slice(0, 19) : '—';
 }
 
-export default async function SyncDashboard() {
+export default async function SyncDashboard({
+  searchParams,
+}: {
+  searchParams: Promise<{ notice?: string }>;
+}) {
   await requireAdmin('/admin/sync');
 
-  const [throughput, dlq, drift, counts, subs] = await Promise.all([
+  const [{ notice }, throughput, dlq, drift, counts, subs] = await Promise.all([
+    searchParams,
     eventThroughput(),
     deadLetterQueue(),
     currentDrift(),
@@ -89,6 +94,16 @@ export default async function SyncDashboard() {
           . Reconciliation runs nightly at 03:17 UTC.
         </p>
       </header>
+
+      {notice ? (
+        <p
+          role="status"
+          data-testid="sync-notice"
+          className="rounded-lg border border-warn-600/30 bg-warn-100 px-4 py-3 text-sm text-warn-600 dark:bg-warn-600/10 dark:text-warn-400"
+        >
+          {notice}
+        </p>
+      ) : null}
 
       <section aria-labelledby="throughput" className="space-y-3">
         <h2 id="throughput" className="text-xl font-semibold">

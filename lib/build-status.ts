@@ -40,5 +40,5 @@ export const MEASURED = {
   agentScenarios: 30,
   guardrailHoldRate: 1.0,
   /** vitest + playwright. */
-  tests: 677,
+  tests: 711,
 } as const;

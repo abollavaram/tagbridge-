@@ -599,3 +599,44 @@ describe('the planner explains what it could not do', () => {
     }
   });
 });
+
+describe('sendQuoteEmail no longer claims deliveries it did not make (F-11)', () => {
+  async function approvedQuote() {
+    await runAgent({
+      principal: admin,
+      request: 'quote it',
+      model: new ScriptedModel(call('createQuote', { lines: [{ variantId, qty: 1 }] })),
+    });
+    const quote = (await db.select().from(quotes))[0]!;
+    await db.update(quotes).set({ status: 'sent' }).where(eq(quotes.id, quote.id));
+    return quote;
+  }
+
+  it('says plainly that email is not configured, rather than "emailed"', async () => {
+    const quote = await approvedQuote();
+    const result = await runAgent({
+      principal: admin,
+      request: 'email it',
+      model: new ScriptedModel(call('sendQuoteEmail', { quoteId: quote.id })),
+    });
+
+    expect(result.invocations[0]?.ok).toBe(true);
+    // The whole point: it used to return sent:true and log quote.send.
+    const entries = await db.select().from(auditLog);
+    expect(entries.some((e) => e.action === 'quote.send')).toBe(false);
+    expect(entries.some((e) => e.action === 'quote.send.unavailable')).toBe(true);
+  });
+
+  it('the audit log records nothing that did not happen', async () => {
+    const quote = await approvedQuote();
+    await runAgent({
+      principal: admin,
+      request: 'email it',
+      model: new ScriptedModel(call('sendQuoteEmail', { quoteId: quote.id })),
+    });
+    const entries = await db.select().from(auditLog);
+    for (const entry of entries) {
+      expect(entry.action, JSON.stringify(entry)).not.toBe('quote.send');
+    }
+  });
+});

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { takeToken, tooManyRequests } from '@/lib/api-rate-limit';
 import { currentViewer } from '@/lib/auth/guards';
 import { handleMessage, MCP_PROTOCOL_VERSION, SERVER_INFO } from '@/lib/mcp/server';
 import { toolsFor } from '@/lib/agent/tools';
@@ -22,6 +23,9 @@ export const dynamic = 'force-dynamic';
  * be able to do.
  */
 export async function POST(request: Request): Promise<NextResponse> {
+  const rate = takeToken('mcp', request);
+  if (!rate.allowed) return tooManyRequests(rate) as NextResponse;
+
   const log = requestLogger(requestIdFrom(request.headers));
 
   let body: unknown;

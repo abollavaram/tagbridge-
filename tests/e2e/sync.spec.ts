@@ -203,3 +203,69 @@ test.describe('the sync dashboard', () => {
     await expect(page.getByTestId('dlq-empty')).toBeVisible();
   });
 });
+
+test.describe('the new scheduled endpoints', () => {
+  test('quote expiry refuses an unauthenticated caller and runs for the scheduler', async ({
+    request,
+  }) => {
+    expect((await request.get('/api/cron/expire-quotes')).status()).toBe(401);
+
+    const response = await request.get('/api/cron/expire-quotes', {
+      headers: { authorization: `Bearer ${CRON_SECRET}` },
+    });
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toMatchObject({ considered: expect.any(Number) });
+  });
+
+  test('the retry drain refuses an unauthenticated caller and runs for the scheduler', async ({
+    request,
+  }) => {
+    expect((await request.get('/api/cron/drain-retries')).status()).toBe(401);
+
+    const response = await request.get('/api/cron/drain-retries', {
+      headers: { authorization: `Bearer ${CRON_SECRET}` },
+    });
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toMatchObject({ attempted: expect.any(Number) });
+  });
+});
+
+test.describe('security headers', () => {
+  test('a Content-Security-Policy is set, with a nonce', async ({ request }) => {
+    const response = await request.get('/');
+    const csp = response.headers()['content-security-policy'];
+    expect(csp).toBeTruthy();
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    // A nonce, not 'unsafe-inline': the whole point of the header.
+    expect(csp).toMatch(/script-src [^;]*'nonce-/);
+  });
+
+  test('the nonce differs per request', async ({ request }) => {
+    const first = (await request.get('/')).headers()['content-security-policy'];
+    const second = (await request.get('/')).headers()['content-security-policy'];
+    expect(first).not.toBe(second);
+  });
+
+  test('the policy does not break the page it protects', async ({ page }) => {
+    // The bug this replaces: script-src 'self' blocked Next's own inline
+    // bootstrap, and every page in the app rendered as an empty body.
+    const violations: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error' && message.text().includes('Content Security')) {
+        violations.push(message.text());
+      }
+    });
+    await page.goto('/signin');
+    await expect(page.getByRole('button', { name: /buyer@example.com/ })).toBeVisible();
+    expect(violations).toEqual([]);
+  });
+
+  test('the other headers are still there', async ({ request }) => {
+    const headers = (await request.get('/')).headers();
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    expect(headers['x-frame-options']).toBe('DENY');
+    expect(headers['strict-transport-security']).toContain('max-age=');
+  });
+});

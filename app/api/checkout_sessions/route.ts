@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { takeToken, tooManyRequests } from '@/lib/api-rate-limit';
 import { currentViewer } from '@/lib/auth/guards';
 import { containsPriceField } from '@/lib/commerce/pricing';
 import {
@@ -23,6 +24,9 @@ export const dynamic = 'force-dynamic';
  * tell them nothing.
  */
 export async function POST(request: Request): Promise<NextResponse> {
+  const rate = takeToken('checkout', request);
+  if (!rate.allowed) return tooManyRequests(rate) as NextResponse;
+
   const log = requestLogger(requestIdFrom(request.headers));
 
   let body: unknown;

@@ -15,14 +15,33 @@ test.describe('the agent endpoint', () => {
     expect(body.guardrails).toContain('human_in_the_loop');
   });
 
-  test('refuses an anonymous caller', async ({ request }) => {
-    const response = await request.post('/api/agent', { data: { request: 'find a gateway' } });
-    expect(response.status()).toBe(401);
+  test('answers an anonymous caller with the guest tool set', async ({ request }) => {
+    // Deliberately not a 401 any more. The interesting part of this system is
+    // what it refuses to do, and you cannot see that from behind a sign-in
+    // wall — so a signed-out visitor gets search and compatibility, and no
+    // quoting. The same rule the MCP server already applied.
+    const response = await request.post('/api/agent', {
+      data: { request: 'Siemens S7-1500 into InfluxDB, 800 tags' },
+    });
+    expect(response.status()).toBe(200);
+    const body = await response.json();
+    expect(body.role).toBe('guest');
+    expect(body.signedIn).toBe(false);
+    expect(body.trace.map((t: { tool: string }) => t.tool)).not.toContain('createQuote');
+  });
+
+  test('a guest cannot reach the quoting tools even by asking', async ({ request }) => {
+    const response = await request.post('/api/agent', {
+      data: { request: 'ControlLogix to SQL Server, 5000 tags. Quote it.' },
+    });
+    const body = await response.json();
+    expect(body.trace.every((t: { tool: string }) => t.tool !== 'createQuote')).toBe(true);
+    expect(body.answer).toMatch(/sign in/i);
   });
 
   test('rejects a malformed body rather than guessing', async ({ request }) => {
     const response = await request.post('/api/agent', { data: { nonsense: true } });
-    expect([400, 401]).toContain(response.status());
+    expect(response.status()).toBe(400);
   });
 
   test('answers a signed-in buyer and returns a trace', async ({ page, request }) => {

@@ -1,5 +1,5 @@
-import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
+import { isScheduler } from '@/lib/cron-auth';
 import { getSubscriptionProvider } from '@/lib/sync/provider';
 import { reconcile } from '@/lib/sync/reconcile';
 import { requestIdFrom, requestLogger } from '@/lib/telemetry/logger';
@@ -12,28 +12,13 @@ export const maxDuration = 60;
 /**
  * Nightly reconciliation, triggered by Vercel Cron.
  *
- * Vercel sends `Authorization: Bearer $CRON_SECRET` when that variable is set
- * on the project. The check is constant-time and, when no secret is
- * configured, the endpoint is refused outright rather than left open — an
- * unprotected endpoint that walks the whole subscription table is a free
- * amplification primitive for anyone who finds the URL.
- *
- * The one exception is a non-production build, where there is no secret to
- * configure and the e2e suite needs to call it.
+ * Authorisation is shared with the other scheduled routes in
+ * `lib/cron-auth.ts` — three copies of a constant-time bearer check is three
+ * places for one of them to be subtly wrong.
  */
-function authorized(request: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return process.env.NODE_ENV !== 'production';
-
-  const header = request.headers.get('authorization') ?? '';
-  const expected = Buffer.from(`Bearer ${secret}`);
-  const presented = Buffer.from(header);
-  if (expected.length !== presented.length) return false;
-  return timingSafeEqual(expected, presented);
-}
 
 export async function GET(request: Request): Promise<NextResponse> {
-  if (!authorized(request)) {
+  if (!isScheduler(request)) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 

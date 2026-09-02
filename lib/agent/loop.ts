@@ -174,7 +174,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let fallbackReason: string | null = null;
 
   // Fail closed to the deterministic path rather than failing the request.
-  if (breaker.state === 'open' && !model.deterministic) {
+  // `allow()` rather than reading the state: half-open admits exactly one
+  // probe, and this is where that probe is spent.
+  if (!model.deterministic && !breaker.allow()) {
     model = new DeterministicPlanner();
     fallbackReason = 'circuit breaker open';
   }
@@ -197,7 +199,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
     let turn;
     try {
-      turn = await model.turn({ system: SYSTEM_PROMPT, messages, tools });
+      turn = await model.turn({
+        system: SYSTEM_PROMPT,
+        messages,
+        tools,
+        // Whatever is left of the run's budget, so one slow call cannot
+        // outlive the deadline the loop is supposed to enforce.
+        timeoutMs: Math.max(1_000, timeoutMs - (Date.now() - startedAt)),
+      });
       breaker.recordSuccess();
     } catch (error) {
       breaker.recordFailure();

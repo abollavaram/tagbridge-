@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { takeToken, tooManyRequests } from '@/lib/api-rate-limit';
 import { z } from 'zod';
 import { search } from '@/lib/search/pipeline';
 import { requestIdFrom, requestLogger } from '@/lib/telemetry/logger';
@@ -15,6 +16,9 @@ const querySchema = z.object({
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
+  const rate = takeToken('search', request);
+  if (!rate.allowed) return tooManyRequests(rate) as NextResponse;
+
   const url = new URL(request.url);
   const parsed = querySchema.safeParse({
     q: url.searchParams.get('q') ?? '',

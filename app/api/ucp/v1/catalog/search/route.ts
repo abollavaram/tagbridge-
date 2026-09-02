@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { takeToken, tooManyRequests } from '@/lib/api-rate-limit';
 import { siteOrigin } from '@/lib/ucp/manifest';
 import { ucpCatalogSearch } from '@/lib/ucp/service';
 
@@ -9,6 +10,9 @@ const cors = { 'access-control-allow-origin': '*' };
 
 /** GET for a simple agent; POST for one sending the UCP search_request body. */
 export async function GET(request: Request): Promise<NextResponse> {
+  const rate = takeToken('ucp', request);
+  if (!rate.allowed) return tooManyRequests(rate) as NextResponse;
+
   const url = new URL(request.url);
   const query = url.searchParams.get('query') ?? url.searchParams.get('q') ?? '';
   const limit = Number(url.searchParams.get('limit') ?? 10);

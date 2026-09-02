@@ -36,6 +36,7 @@ export interface AgentModel {
     system: string;
     messages: ModelMessage[];
     tools: readonly AgentTool<never, never>[];
+    timeoutMs?: number;
   }): Promise<ModelTurn>;
 }
 
@@ -52,7 +53,34 @@ export class AnthropicAgentModel implements AgentModel {
     system: string;
     messages: ModelMessage[];
     tools: readonly AgentTool<never, never>[];
+    /** What is left of the run's wall-clock budget. */
+    timeoutMs?: number;
   }): Promise<ModelTurn> {
+    // The loop's deadline was checked at the top of each iteration and the
+    // call itself was awaited unbounded, so a single slow turn could run past
+    // the whole budget and the platform would kill the function before the
+    // agent's own guardrail got a say. The budget is passed down here instead.
+    const controller = new AbortController();
+    const deadline =
+      typeof input.timeoutMs === 'number' && input.timeoutMs > 0
+        ? setTimeout(() => controller.abort(), input.timeoutMs)
+        : null;
+
+    try {
+      return await this.request(input, controller.signal);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+    }
+  }
+
+  private async request(
+    input: {
+      system: string;
+      messages: ModelMessage[];
+      tools: readonly AgentTool<never, never>[];
+    },
+    signal: AbortSignal,
+  ): Promise<ModelTurn> {
     const response = await this.client.messages.create({
       model: 'claude-opus-5',
       max_tokens: 8_000,
@@ -71,7 +99,7 @@ export class AnthropicAgentModel implements AgentModel {
         strict: true,
       })),
       messages: input.messages as Anthropic.MessageParam[],
-    });
+    }, { signal });
 
     const toolCalls: ToolCall[] = [];
     let text = '';

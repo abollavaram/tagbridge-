@@ -206,49 +206,104 @@ export class InProcessRateLimiter implements RateLimiter {
  * deterministic answer, which is worse than the agent and far better than an
  * error page. Opening the breaker is therefore a downgrade, never an outage.
  */
-export type BreakerState = 'closed' | 'open';
+export type BreakerState = 'closed' | 'open' | 'half_open';
 
 export class CircuitBreaker {
   private failures = 0;
   private spendCents = 0;
+  private spendDay: string;
   private openedAtMs: number | null = null;
+  /** True once the cooldown has lapsed and one probe is allowed through. */
+  private probing = false;
 
   constructor(
     private readonly failureThreshold = 3,
     private readonly dailySpendCapCents = 50_00,
     private readonly cooldownMs = 60_000,
-  ) {}
+    private readonly now: () => number = Date.now,
+  ) {
+    this.spendDay = CircuitBreaker.dayOf(this.now());
+  }
 
+  /** UTC calendar day. A "daily" cap needs a day to be daily. */
+  private static dayOf(ms: number): string {
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+
+  private rollSpendDay(): void {
+    const today = CircuitBreaker.dayOf(this.now());
+    if (today !== this.spendDay) {
+      this.spendDay = today;
+      this.spendCents = 0;
+      // A breaker held open only by yesterday's spend should open the door
+      // again on the new day.
+      if (this.openedAtMs !== null && this.failures < this.failureThreshold) {
+        this.openedAtMs = null;
+      }
+    }
+  }
+
+  /**
+   * Three states, not two.
+   *
+   * The cooldown lapsing used to report `closed` while `failures` was still at
+   * the threshold, so the very next failure re-tripped instantly — there was
+   * never the single trial request that is the entire point of half-open.
+   */
   get state(): BreakerState {
+    this.rollSpendDay();
     if (this.openedAtMs === null) return 'closed';
-    return Date.now() - this.openedAtMs < this.cooldownMs ? 'open' : 'closed';
+    if (this.now() - this.openedAtMs < this.cooldownMs) return 'open';
+    return 'half_open';
+  }
+
+  /** Whether a call may proceed. Half-open admits exactly one probe. */
+  allow(): boolean {
+    const state = this.state;
+    if (state === 'open') return false;
+    if (state === 'half_open') {
+      if (this.probing) return false;
+      this.probing = true;
+      return true;
+    }
+    return true;
   }
 
   recordFailure(): void {
     this.failures += 1;
+    this.probing = false;
     if (this.failures >= this.failureThreshold) this.trip();
   }
 
   recordSuccess(): void {
+    // A probe that succeeds closes the breaker properly rather than leaving
+    // the failure count primed to trip on the next hiccup.
     this.failures = 0;
+    this.probing = false;
+    this.openedAtMs = null;
   }
 
   recordSpendCents(cents: number): void {
+    this.rollSpendDay();
     this.spendCents += cents;
     if (this.spendCents >= this.dailySpendCapCents) this.trip();
   }
 
   trip(): void {
-    this.openedAtMs = Date.now();
+    this.openedAtMs = this.now();
+    this.probing = false;
   }
 
   reset(): void {
     this.failures = 0;
     this.spendCents = 0;
     this.openedAtMs = null;
+    this.probing = false;
+    this.spendDay = CircuitBreaker.dayOf(this.now());
   }
 
   get spentCents(): number {
+    this.rollSpendDay();
     return this.spendCents;
   }
 }

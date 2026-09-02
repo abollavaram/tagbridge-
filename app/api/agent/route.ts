@@ -6,7 +6,10 @@ import { requestIdFrom, requestLogger } from '@/lib/telemetry/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// Comfortably above the agent's own 60s deadline, so the in-app guardrail is
+// the one that trips and the caller gets the deterministic fallback rather
+// than a platform error page.
+export const maxDuration = 90;
 
 /**
  * The agent endpoint.

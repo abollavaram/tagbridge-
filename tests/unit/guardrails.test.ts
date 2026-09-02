@@ -276,3 +276,82 @@ describe('the price guard knows the protocols’ vocabulary, not just ours', () 
     ).toBeNull();
   });
 });
+
+describe('the circuit breaker has a real half-open state (F-13)', () => {
+  it('reports half_open once the cooldown lapses, not closed', () => {
+    let now = 0;
+    const breaker = new CircuitBreaker(1, 50_00, 1_000, () => now);
+    breaker.recordFailure();
+    expect(breaker.state).toBe('open');
+    now = 5_000;
+    // Past the 1s cooldown: a probe is due, which is not the same as closed.
+    expect(breaker.state).toBe('half_open');
+  });
+
+  it('admits exactly one probe while half-open', () => {
+    let now = 0;
+    const breaker = new CircuitBreaker(1, 50_00, 1_000, () => now);
+    breaker.recordFailure();
+    now = 5_000;
+    expect(breaker.allow()).toBe(true);
+    // The second caller waits for the probe's verdict.
+    expect(breaker.allow()).toBe(false);
+  });
+
+  it('a successful probe closes it properly rather than leaving it primed', () => {
+    let now = 0;
+    const breaker = new CircuitBreaker(2, 50_00, 1_000, () => now);
+    breaker.recordFailure();
+    breaker.recordFailure();
+    now = 5_000;
+    breaker.allow();
+    breaker.recordSuccess();
+
+    expect(breaker.state).toBe('closed');
+    // The bug: failures stayed at the threshold, so one hiccup re-tripped it.
+    breaker.recordFailure();
+    expect(breaker.state).toBe('closed');
+  });
+
+  it('a failed probe re-opens it', () => {
+    let now = 0;
+    const breaker = new CircuitBreaker(1, 50_00, 1_000, () => now);
+    breaker.recordFailure();
+    now = 5_000;
+    breaker.allow();
+    breaker.recordFailure();
+    expect(breaker.state).toBe('open');
+  });
+
+  it('the daily spend cap actually has a day', () => {
+    const day1 = Date.parse('2026-03-01T12:00:00Z');
+    const day2 = Date.parse('2026-03-02T00:30:00Z');
+    let now = day1;
+    const breaker = new CircuitBreaker(99, 1_000, 60_000, () => now);
+
+    breaker.recordSpendCents(1_000);
+    expect(breaker.state).toBe('open');
+
+    // Next UTC day: the budget resets rather than the breaker staying open
+    // until the instance happens to recycle.
+    now = day2;
+    expect(breaker.spentCents).toBe(0);
+    expect(breaker.state).toBe('closed');
+  });
+
+  it('does not reset spend within the same day', () => {
+    const morning = Date.parse('2026-03-01T09:00:00Z');
+    const evening = Date.parse('2026-03-01T21:00:00Z');
+    let now = morning;
+    const breaker = new CircuitBreaker(99, 10_000, 60_000, () => now);
+    breaker.recordSpendCents(4_000);
+    now = evening;
+    expect(breaker.spentCents).toBe(4_000);
+  });
+
+  it('allows freely when closed', () => {
+    const breaker = new CircuitBreaker();
+    expect(breaker.allow()).toBe(true);
+    expect(breaker.allow()).toBe(true);
+  });
+});
