@@ -19,7 +19,7 @@ const EXAMPLES = [
 const INTENT_COPY: Record<string, string> = {
   'specific-product': 'You named a product, so exact matches rank first.',
   'compatibility-question':
-    'This reads as a compatibility question. The resolver that answers these properly arrives in phase 3; for now these are the products that speak what you asked about.',
+    'This reads as a compatibility question. These are the products that speak what you asked about; the assistant can resolve a full bundle from your source system, destination and tag count.',
   browse: 'This reads as a description of a problem, so semantic matching is weighted higher.',
 };
 

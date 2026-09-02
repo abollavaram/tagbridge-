@@ -1,37 +1,108 @@
 @import 'tailwindcss';
 
 @theme {
+  /* Neutrals carry a faint blue bias so they read as chosen rather than
+     inherited, and so they sit under the signal hue without fighting it. */
   --color-ink-50: oklch(0.98 0.005 250);
   --color-ink-100: oklch(0.95 0.008 250);
+  --color-ink-200: oklch(0.90 0.010 250);
   --color-ink-300: oklch(0.78 0.015 250);
   --color-ink-500: oklch(0.55 0.02 250);
+  --color-ink-600: oklch(0.45 0.025 250);
   --color-ink-700: oklch(0.35 0.025 250);
+  --color-ink-800: oklch(0.27 0.028 250);
   --color-ink-900: oklch(0.21 0.03 250);
+  --color-ink-950: oklch(0.16 0.028 250);
+
+  --color-signal-100: oklch(0.94 0.03 235);
+  --color-signal-300: oklch(0.80 0.09 235);
   --color-signal-500: oklch(0.62 0.15 235);
   --color-signal-600: oklch(0.54 0.15 235);
+  --color-signal-700: oklch(0.46 0.13 235);
+
+  /* Semantic, and deliberately separate from the accent: a guardrail firing
+     is not the same kind of event as a link. */
+  --color-good-100: oklch(0.94 0.04 155);
+  --color-good-600: oklch(0.52 0.13 155);
+  --color-good-400: oklch(0.72 0.14 155);
+  --color-warn-100: oklch(0.95 0.05 85);
+  --color-warn-600: oklch(0.55 0.13 70);
+  --color-warn-400: oklch(0.78 0.13 80);
+  --color-stop-100: oklch(0.94 0.04 25);
+  --color-stop-600: oklch(0.52 0.17 25);
+  --color-stop-400: oklch(0.70 0.16 25);
+
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Menlo, monospace;
 }
 
 :root {
   color-scheme: light dark;
+  --surface: var(--color-ink-50);
+  --surface-raised: #ffffff;
+  --surface-sunk: var(--color-ink-100);
+  --hairline: var(--color-ink-200);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: var(--color-ink-950);
+    --surface-raised: var(--color-ink-900);
+    --surface-sunk: var(--color-ink-800);
+    --hairline: var(--color-ink-800);
+  }
 }
 
 body {
-  background: var(--color-ink-50);
+  background: var(--surface);
   color: var(--color-ink-900);
 }
 
 @media (prefers-color-scheme: dark) {
   body {
-    background: var(--color-ink-900);
     color: var(--color-ink-50);
   }
 }
 
 a:focus-visible,
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
   outline: 2px solid var(--color-signal-500);
   outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Utility classes used across the app, defined once so the pages stay
+   readable and a change lands everywhere at the same time. */
+@layer components {
+  .surface-card {
+    background: var(--surface-raised);
+    border: 1px solid var(--hairline);
+    border-radius: 0.6rem;
+  }
+  .hairline {
+    border-color: var(--hairline);
+  }
+}
+
+/* A caller who has asked for less motion gets less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes tb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.tb-thinking {
+  animation: tb-pulse 1.4s ease-in-out infinite;
 }

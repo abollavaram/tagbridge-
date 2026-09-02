@@ -18,6 +18,7 @@ import path from 'node:path';
 import * as schema from '@/lib/db/schema';
 import { seed } from '@/lib/db/seed';
 import { buildProductIndex } from '@/lib/search/indexer';
+import { buildKnowledgeGraph } from '@/lib/graph/build';
 import { SNAPSHOT_PATH } from '@/lib/db/snapshot-path';
 
 async function main(): Promise<void> {
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
   await migrate(db, { migrationsFolder: path.join(process.cwd(), 'lib', 'db', 'migrations') });
   const result = await seed(db as never);
   const index = await buildProductIndex(db as never);
+  const graph = await buildKnowledgeGraph(db as never);
 
   const dump = await client.dumpDataDir('gzip');
   mkdirSync(path.dirname(SNAPSHOT_PATH), { recursive: true });
@@ -40,7 +42,8 @@ async function main(): Promise<void> {
     `snapshot written: ${(bytes / 1024 / 1024).toFixed(1)} MB in ${Date.now() - started} ms ` +
       `(${result.products} products, ${result.variants} variants, ${result.priceTiers} price tiers, ` +
       `${result.synonyms} synonyms, ${result.users} users, ` +
-      `${index.indexed} embeddings via ${index.embedder} at ${index.dimensions}d)`,
+      `${index.indexed} embeddings via ${index.embedder} at ${index.dimensions}d, ` +
+      `${graph.nodes} graph nodes and ${graph.edges} edges)`,
   );
 }
 

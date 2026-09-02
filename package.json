@@ -24,9 +24,13 @@
     "db:setup": "tsx scripts/generate-auth-secret.ts && tsx scripts/db-setup.ts",
     "lighthouse": "tsx scripts/lighthouse.ts",
     "db:snapshot": "tsx scripts/build-db-snapshot.ts",
-    "eval:search": "tsx evals/search/run.ts"
+    "eval:search": "tsx evals/search/run.ts",
+    "eval:agent": "tsx evals/agent/run.ts",
+    "mcp": "tsx scripts/mcp-stdio.ts",
+    "mcp:transcript": "tsx scripts/mcp-transcript.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
     "@auth/drizzle-adapter": "^1.11.3",
     "@electric-sql/pglite": "^0.5.8",
     "drizzle-orm": "^0.45.2",
@@ -47,8 +51,11 @@
     "@playwright/test": "^1.56.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^26.4.0",
+    "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.39.5",

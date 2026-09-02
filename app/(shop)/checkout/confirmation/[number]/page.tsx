@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { Money } from '@/components/money';
-import { getOrderByNumber } from '@/lib/commerce/orders';
+import { currentViewer } from '@/lib/auth/guards';
+import { getOrderForReader } from '@/lib/commerce/orders';
 
 export const metadata = { title: 'Order confirmed', robots: { index: false } };
 export const dynamic = 'force-dynamic';
@@ -9,7 +10,8 @@ export const dynamic = 'force-dynamic';
 const STATUS_COPY: Record<string, string> = {
   po_received:
     'Your purchase order is recorded. Nothing has been charged. Licences are issued once the PO is verified against your account.',
-  pending_payment: 'This order is waiting on payment. Nothing has been charged yet.',
+  pending_payment:
+    'This order is waiting on payment. Nothing has been charged yet — if you closed the payment page, start again from your cart.',
   paid: 'Payment received. Licence keys follow by email.',
   fulfilled: 'This order has been fulfilled.',
   cancelled: 'This order was cancelled.',
@@ -17,10 +19,26 @@ const STATUS_COPY: Record<string, string> = {
 
 export default async function ConfirmationPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ number: string }>;
+  searchParams: Promise<{ t?: string }>;
 }) {
-  const found = await getOrderByNumber((await params).number);
+  const [{ number }, { t }, viewer] = await Promise.all([
+    params,
+    searchParams,
+    currentViewer(),
+  ]);
+
+  // The order number is not a credential — it comes from a sequence. Reading
+  // requires the token from the confirmation link, or being the signed-in
+  // owner. `notFound()` for both misses, so the page never reveals which
+  // order numbers are real.
+  const found = await getOrderForReader(number, {
+    accessToken: t,
+    viewerId: viewer?.id,
+    viewerRole: viewer?.role,
+  });
   if (!found) notFound();
   const { order, items } = found;
 

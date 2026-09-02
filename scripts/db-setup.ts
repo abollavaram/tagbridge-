@@ -21,6 +21,7 @@ async function main(): Promise<void> {
   const schema = await import('@/lib/db/schema');
   const { seed } = await import('@/lib/db/seed');
   const { buildProductIndex } = await import('@/lib/search/indexer');
+  const { buildKnowledgeGraph } = await import('@/lib/graph/build');
 
   console.log('target: DATABASE_URL');
   const client = postgres(process.env.DATABASE_URL, { max: 1 });
@@ -29,11 +30,13 @@ async function main(): Promise<void> {
   await migrate(db, { migrationsFolder: 'lib/db/migrations' });
   const result = await seed(db as never);
   const index = await buildProductIndex(db as never);
+  const graph = await buildKnowledgeGraph(db as never);
   await client.end();
   console.log(
     `seeded ${result.products} products, ${result.variants} variants, ` +
       `${result.priceTiers} price tiers, ${result.synonyms} synonyms, ${result.users} users, ` +
-      `${index.indexed} embeddings via ${index.embedder}`,
+      `${index.indexed} embeddings via ${index.embedder}, ` +
+      `${graph.nodes} graph nodes and ${graph.edges} edges`,
   );
 }
 

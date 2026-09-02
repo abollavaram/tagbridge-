@@ -43,6 +43,8 @@ export function getDatabase(): Promise<AppDatabase> {
       await seed(built);
       const { buildProductIndex } = await import('@/lib/search/indexer');
       await buildProductIndex(built);
+      const { buildKnowledgeGraph } = await import('@/lib/graph/build');
+      await buildKnowledgeGraph(built);
       return built;
     }
   })();

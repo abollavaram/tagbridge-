@@ -109,9 +109,12 @@ export default async function CatalogPage({
         <h1 className="text-3xl font-semibold tracking-tight">Catalog</h1>
         <p className="text-ink-700 dark:text-ink-300">
           {page.total} product{page.total === 1 ? '' : 's'}
-          {activeFilters > 0 ? ' matching your filters' : ''}. Search that understands how
-          engineers describe a problem arrives in phase 2; for now, browse by protocol,
-          vendor or category.
+          {activeFilters > 0 ? ' matching your filters' : ''}. Browse by protocol, vendor
+          or category — or{' '}
+          <Link href="/search" className="underline">
+            describe the problem
+          </Link>{' '}
+          and let the search work out what you need.
         </p>
       </header>
 

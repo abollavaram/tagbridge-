@@ -33,6 +33,23 @@ const tsvector = customType<{ data: string; driverData: string }>({
 export const licenseTypeEnum = pgEnum('license_type', ['perpetual', 'subscription']);
 export const billingIntervalEnum = pgEnum('billing_interval', ['none', 'monthly', 'annual']);
 export const synonymKindEnum = pgEnum('synonym_kind', ['protocol', 'vendor', 'device', 'concept']);
+export const graphNodeKindEnum = pgEnum('graph_node_kind', [
+  'product',
+  'protocol',
+  'vendor',
+  'device',
+  'concept',
+  'destination',
+  'category',
+]);
+export const graphRelationEnum = pgEnum('graph_relation', [
+  'speaks',
+  'compatible_with',
+  'in_category',
+  'alias_of',
+  'writes_to',
+  'related_to',
+]);
 export const userRoleEnum = pgEnum('user_role', ['buyer', 'sales', 'admin']);
 export const quoteStatusEnum = pgEnum('quote_status', [
   'draft',
@@ -170,6 +187,56 @@ export const synonyms = pgTable(
     uniqueIndex('synonyms_term_canonical_uq').on(t.term, t.canonical),
     index('synonyms_term_idx').on(t.term),
     index('synonyms_canonical_idx').on(t.canonical),
+  ],
+);
+
+/* --------------------------------------------------------- knowledge graph */
+
+/**
+ * The catalogue as a typed graph.
+ *
+ * The synonym table is a flat alias list: it can tell you Rockwell means
+ * Allen-Bradley, and nothing else. A graph carries the relations that alias
+ * list cannot — which products speak a protocol, which gateway bridges two of
+ * them, which destination a connector writes to — so a query can be answered
+ * by walking from what the buyer said to what they need, in hops.
+ */
+export const graphNodes = pgTable(
+  'graph_nodes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: graphNodeKindEnum('kind').notNull(),
+    /** Stable slug, unique within a kind. Products use their SKU. */
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    /** Set for product nodes, so a walk can return catalogue rows directly. */
+    productId: uuid('product_id').references(() => products.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    uniqueIndex('graph_nodes_kind_key_uq').on(t.kind, t.key),
+    index('graph_nodes_kind_idx').on(t.kind),
+    index('graph_nodes_product_idx').on(t.productId),
+  ],
+);
+
+export const graphEdges = pgTable(
+  'graph_edges',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    fromId: uuid('from_id')
+      .notNull()
+      .references(() => graphNodes.id, { onDelete: 'cascade' }),
+    toId: uuid('to_id')
+      .notNull()
+      .references(() => graphNodes.id, { onDelete: 'cascade' }),
+    relation: graphRelationEnum('relation').notNull(),
+    /** How much this edge is trusted when a walk scores a path. */
+    weight: integer('weight').notNull().default(100),
+  },
+  (t) => [
+    uniqueIndex('graph_edges_triple_uq').on(t.fromId, t.toId, t.relation),
+    index('graph_edges_from_idx').on(t.fromId),
+    index('graph_edges_to_idx').on(t.toId),
   ],
 );
 
@@ -312,6 +379,15 @@ export const orders = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     number: text('number').notNull().unique(),
+    /**
+     * Unguessable key for the confirmation page.
+     *
+     * `number` comes from a sequence and is therefore strictly contiguous —
+     * anyone who places one order can walk the whole book. It stays the
+     * human-readable reference on the paperwork; this is what actually
+     * authorises reading the order without a session.
+     */
+    accessToken: uuid('access_token').notNull().defaultRandom(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     email: text('email').notNull(),
     companyName: text('company_name'),
@@ -364,6 +440,14 @@ export const subscriptions = pgTable(
     status: subscriptionStatusEnum('status').notNull(),
     currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Provider timestamp of the newest event already applied to this row.
+     *
+     * Distinct from `updatedAt`, which is when *we* wrote. Ordering is decided
+     * on this: an event that occurred before it has been superseded and is
+     * acknowledged without being applied, however late it arrives.
+     */
+    lastEventAt: timestamp('last_event_at', { withTimezone: true }),
   },
   (t) => [index('subscriptions_user_idx').on(t.userId)],
 );
@@ -379,6 +463,9 @@ export const erpSyncRecords = pgTable(
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
     state: syncStateEnum('state').notNull().default('pending'),
     driftDetected: boolean('drift_detected').notNull().default(false),
+    /** Which check failed, so the dashboard can say more than "something is wrong". */
+    driftReason: text('drift_reason'),
+    driftDetectedAt: timestamp('drift_detected_at', { withTimezone: true }),
   },
   (t) => [uniqueIndex('erp_sync_records_subscription_uq').on(t.subscriptionId)],
 );
@@ -465,6 +552,11 @@ export const orderItemsRelations = relations(orderItems, ({ one }) => ({
     references: [productVariants.id],
   }),
 }));
+
+export type GraphNode = typeof graphNodes.$inferSelect;
+export type GraphEdge = typeof graphEdges.$inferSelect;
+export type GraphNodeKind = (typeof graphNodeKindEnum.enumValues)[number];
+export type GraphRelation = (typeof graphRelationEnum.enumValues)[number];
 
 export type Product = typeof products.$inferSelect;
 export type Order = typeof orders.$inferSelect;

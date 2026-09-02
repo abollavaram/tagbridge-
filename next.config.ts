@@ -16,6 +16,16 @@ const nextConfig: NextConfig = {
     'postgres',
     'pino',
   ],
+  async rewrites() {
+    return [
+      // Agent-native discovery lives at well-known paths by convention. The
+      // App Router will not route a directory whose name starts with a dot,
+      // so the handlers live under /api and the well-known paths rewrite onto
+      // them — which also keeps the published URL stable if the handler moves.
+      { source: '/.well-known/ucp', destination: '/api/ucp' },
+      { source: '/.well-known/agentic-commerce', destination: '/api/acp' },
+    ];
+  },
   async headers() {
     return [
       {
