@@ -43,16 +43,24 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const viewer = await currentViewer();
-  if (!viewer) {
-    // A signed-out visitor can still ask questions; they simply have no user
-    // row to hang a quote on, so the tool set is the read-only one.
-    return NextResponse.json({ error: 'sign in to use the assistant' }, { status: 401 });
-  }
+
+  // A signed-out visitor gets the guest tool set: search and compatibility,
+  // no quoting. The same rule the MCP server already applies, and the reason
+  // the demo works for anyone who lands on the page — the interesting part of
+  // this system is what it refuses to do, and you cannot see that from a
+  // sign-in wall.
+  const principal = viewer
+    ? { userId: viewer.id, email: viewer.email, role: viewer.role }
+    : {
+        userId: '00000000-0000-4000-8000-000000000000',
+        email: '',
+        role: 'guest' as const,
+      };
 
   const result = await runAgent({
-    principal: { userId: viewer.id, email: viewer.email, role: viewer.role },
+    principal,
     request: parsed.data.request,
-    rateKey: clientKey(request, viewer.id),
+    rateKey: clientKey(request, viewer?.id ?? null),
   });
 
   if (result.stopped === 'rate_limited') {
@@ -80,12 +88,20 @@ export async function POST(request: Request): Promise<NextResponse> {
     turns: result.turns,
     stopped: result.stopped,
     tookMs: result.tookMs,
-    // The trace is what makes a wrong answer debuggable rather than a shrug.
+    signedIn: Boolean(viewer),
+    role: principal.role,
+    // The trace is what makes a wrong answer debuggable rather than a shrug —
+    // and on the assistant page it is the thing worth looking at.
     trace: result.invocations.map((i) => ({
       tool: i.name,
       ok: i.ok,
       code: i.code,
       guardrail: i.guardrail,
+      error: i.error,
+    })),
+    guardrailsTripped: result.violations.map((v) => ({
+      guardrail: v.guardrail,
+      detail: v.detail,
     })),
   });
 }

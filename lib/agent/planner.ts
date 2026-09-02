@@ -1,3 +1,4 @@
+import { formatCents } from '@/lib/commerce/pricing';
 import { isResolvable, translateCompatibility } from './translate';
 import type { AgentModel, ModelMessage, ModelTurn } from './model';
 import type { AgentTool, ToolCall } from './types';
@@ -270,9 +271,17 @@ export class DeterministicPlanner implements AgentModel {
       if (typeof output.unitPriceCents === 'number') {
         parts.push(
           `Server-computed price for ${output.sku} at qty ${output.qty}: ` +
-            `${(output.unitPriceCents / 100).toFixed(2)} each.`,
+            `${formatCents(output.unitPriceCents)} each.`,
         );
       }
+    }
+
+    // Asked for a quote and had no tool to do it with: say so, rather than
+    // answering a different question and letting the buyer wonder.
+    const askedToQuote = wantsQuote(request);
+    const couldQuote = results.some((r) => r.name === 'createQuote');
+    if (askedToQuote && !couldQuote && (hits.length > 0 || resolved)) {
+      parts.push('Sign in and I can draft that as a quote.');
     }
 
     const quoted = results.find((r) => r.name === 'createQuote' && !r.isError);

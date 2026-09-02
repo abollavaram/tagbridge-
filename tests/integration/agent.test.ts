@@ -575,3 +575,27 @@ describe('a lost transition is not reported as a successful one (F-08)', () => {
     expect(entries.some((e) => e.action === 'quote.transition')).toBe(false);
   });
 });
+
+describe('the planner explains what it could not do', () => {
+  it('tells a guest to sign in when they asked for a quote', async () => {
+    const result = await runAgent({
+      principal: { userId: buyer.userId, email: '', role: 'guest' },
+      request: 'ControlLogix to SQL Server, 5000 tags. Quote it.',
+      model: new DeterministicPlanner(),
+    });
+    // A guest has no createQuote tool, so the ask silently went unanswered.
+    expect(result.answer).toMatch(/sign in/i);
+    expect(result.invocations.map((i) => i.name)).not.toContain('createQuote');
+  });
+
+  it('formats a price as money, not a bare number', async () => {
+    const result = await runAgent({
+      principal: buyer,
+      request: 'How much is an OPC UA server for 10 units?',
+      model: new DeterministicPlanner(),
+    });
+    if (/price/i.test(result.answer)) {
+      expect(result.answer).toMatch(/\$[\d,]+\.\d{2}/);
+    }
+  });
+});
