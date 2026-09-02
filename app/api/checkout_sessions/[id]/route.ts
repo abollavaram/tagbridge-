@@ -33,7 +33,12 @@ export async function GET(
   }
   try {
     const { id } = await params;
-    return NextResponse.json(await getCheckoutSession(id, siteOrigin(request.url)));
+    return NextResponse.json(
+      await getCheckoutSession(id, siteOrigin(request.url), {
+        userId: viewer.id,
+        role: viewer.role,
+      }),
+    );
   } catch (error) {
     return fail(error);
   }
@@ -91,7 +96,10 @@ export async function POST(
   try {
     const { id } = await params;
     return NextResponse.json(
-      await updateCheckoutSession(id, parsed.data, siteOrigin(request.url)),
+      await updateCheckoutSession(id, parsed.data, siteOrigin(request.url), {
+        userId: viewer.id,
+        role: viewer.role,
+      }),
     );
   } catch (error) {
     return fail(error);

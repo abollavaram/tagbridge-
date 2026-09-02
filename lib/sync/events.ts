@@ -8,6 +8,8 @@ import {
   users,
   webhookEvents,
 } from '@/lib/db/schema';
+import { markOrderPaid, markOrderPaymentFailed } from '@/lib/commerce/orders';
+import { writeAudit } from '@/lib/agent/audit';
 import type { SubscriptionProvider } from './provider';
 
 /**
@@ -26,6 +28,22 @@ import type { SubscriptionProvider } from './provider';
  */
 
 export const MAX_ATTEMPTS = 5;
+
+/**
+ * Order payment events.
+ *
+ * These were handled by nothing at all: the webhook's only branch was the
+ * subscription one, and every other type fell through to `ignored`. So a card
+ * payment was taken and the order sat at `pending_payment` forever, telling
+ * the buyer "nothing has been charged yet". `markOrderPaid` existed, was
+ * correct, and was referenced only by a test.
+ */
+const PAYMENT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'checkout.session.completed',
+  'checkout.session.async_payment_succeeded',
+  'checkout.session.async_payment_failed',
+  'checkout.session.expired',
+]);
 
 /** Event types that carry a subscription and are worth acting on. */
 const SUBSCRIPTION_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -149,6 +167,15 @@ export async function processEvent(
       .where(eq(webhookEvents.providerEventId, providerEventId));
   };
 
+  if (PAYMENT_EVENT_TYPES.has(event.type)) {
+    const outcome = await applyPaymentEvent(event.type, event.payload, providerEventId);
+    if (outcome.retry) return fail(outcome.detail);
+    await settle();
+    return outcome.applied
+      ? { status: 'applied', subscriptionId: outcome.detail }
+      : { status: 'ignored', reason: outcome.detail };
+  }
+
   if (!SUBSCRIPTION_EVENT_TYPES.has(event.type)) {
     // Not an error: providers send far more than any one consumer cares
     // about. Marking it processed keeps it out of the dead-letter queue.
@@ -240,6 +267,90 @@ export async function processEvent(
 
   await settle();
   return { status: 'applied', subscriptionId: remote.id };
+}
+
+interface StripeCheckoutSession {
+  id?: unknown;
+  client_reference_id?: unknown;
+  payment_status?: unknown;
+  amount_total?: unknown;
+}
+
+function checkoutSessionFrom(payload: unknown): StripeCheckoutSession | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const object = (payload as { data?: { object?: unknown } }).data?.object;
+  if (!object || typeof object !== 'object') return null;
+  return object as StripeCheckoutSession;
+}
+
+/**
+ * Applies one payment event.
+ *
+ * The order is resolved from `client_reference_id`, which the checkout session
+ * is created with, and the amount Stripe reports is checked against the order's
+ * own subtotal before anything is marked paid. A mismatch is not settled
+ * quietly: it is a fact somebody has to look at, so it goes to the audit log
+ * and the event is left for an operator rather than being recorded as success.
+ */
+async function applyPaymentEvent(
+  type: string,
+  payload: unknown,
+  providerEventId: string,
+): Promise<{ applied: boolean; retry: boolean; detail: string }> {
+  const session = checkoutSessionFrom(payload);
+  const orderId = typeof session?.client_reference_id === 'string' ? session.client_reference_id : null;
+  if (!orderId) {
+    return { applied: false, retry: false, detail: 'payment event names no order' };
+  }
+
+  if (type === 'checkout.session.async_payment_failed' || type === 'checkout.session.expired') {
+    const cancelled = await markOrderPaymentFailed(orderId);
+    return {
+      applied: cancelled,
+      retry: false,
+      detail: cancelled ? orderId : `order ${orderId} was not awaiting payment`,
+    };
+  }
+
+  // Stripe reports `unpaid` on a completed session whose payment is still
+  // processing. Acting on it would mark an order paid that is not.
+  if (session?.payment_status !== 'paid') {
+    return {
+      applied: false,
+      retry: false,
+      detail: `payment_status is ${String(session?.payment_status)}, not paid`,
+    };
+  }
+
+  const amount = typeof session.amount_total === 'number' ? session.amount_total : undefined;
+  const sessionId = typeof session.id === 'string' ? session.id : providerEventId;
+  const outcome = await markOrderPaid(orderId, sessionId, amount);
+
+  switch (outcome.status) {
+    case 'paid':
+      return { applied: true, retry: false, detail: outcome.orderNumber };
+    case 'already_paid':
+      return { applied: false, retry: false, detail: `order ${outcome.orderNumber} was already paid` };
+    case 'not_found':
+      return { applied: false, retry: false, detail: `no order ${orderId}` };
+    case 'not_payable':
+      return { applied: false, retry: false, detail: `order is ${outcome.current}` };
+    case 'amount_mismatch':
+      await writeAudit({
+        actor: 'system:stripe',
+        action: 'order.payment_mismatch',
+        resource: `order:${orderId}`,
+        before: { expectedCents: outcome.expectedCents },
+        after: { paidCents: outcome.paidCents, sessionId },
+      });
+      // Deliberately retryable so it lands in the dead-letter queue and an
+      // operator sees it, rather than being settled as if it were fine.
+      return {
+        applied: false,
+        retry: true,
+        detail: `paid ${outcome.paidCents} but the order is ${outcome.expectedCents}`,
+      };
+  }
 }
 
 /** Events that failed but have attempts left, oldest first. */

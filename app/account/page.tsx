@@ -106,6 +106,7 @@ export default async function AccountPage() {
                 {orders.map((order) => (
                   <tr key={order.id} className="border-b border-ink-100 dark:border-ink-800">
                     <td className="py-2 pr-4 font-mono text-xs">
+                      {/* No token needed: the signed-in owner qualifies. */}
                       <Link href={`/checkout/confirmation/${order.number}`} className="underline">
                         {order.number}
                       </Link>

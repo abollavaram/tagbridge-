@@ -50,6 +50,13 @@
       "when": 1787966830645,
       "tag": "0006_quote_number_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788356367496,
+      "tag": "0007_order_access_token",
+      "breakpoints": true
     }
   ]
 }

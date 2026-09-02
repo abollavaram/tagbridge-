@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 // Exercises the commerce modules against the same in-process Postgres the app
@@ -15,9 +15,11 @@ const {
   OrderError,
   formatOrderNumber,
   nextOrderNumber,
-  getOrderByNumber,
+  getOrderForReader,
   markOrderPaid,
+  markOrderPaymentFailed,
 } = await import('@/lib/commerce/orders');
+const { firstRow } = await import('@/lib/db/rows');
 const { listProducts, catalogFacets, getProductBySlug, laddersForVariants } = await import(
   '@/lib/commerce/catalog'
 );
@@ -25,6 +27,8 @@ const { resolveUnitPriceCents } = await import('@/lib/commerce/pricing');
 
 type Db = Awaited<ReturnType<typeof getDatabase>>;
 let db: Db;
+/** A real variant id, for the tests below that only need "some product". */
+let variantId: string;
 
 /** A cart is now just a list of lines; nothing is written to the database. */
 function cartOf(lines: { variantId: string; qty: number }[]): { variantId: string; qty: number }[] {
@@ -45,6 +49,12 @@ async function variantBySku(sku: string) {
 beforeAll(async () => {
   db = await getDatabase();
   await seed(db);
+  const first = await db
+    .select({ id: productVariants.id })
+    .from(productVariants)
+    .orderBy(productVariants.sku)
+    .limit(1);
+  variantId = first[0]!.id;
 }, 180_000);
 
 describe('catalog queries', () => {
@@ -177,7 +187,7 @@ describe('purchase order checkout', () => {
     expect(order.number).toMatch(/^TB-\d{6}-\d{6}$/);
     expect(order.subtotalCents).toBe(variant.listPriceCents * 2);
 
-    const found = await getOrderByNumber(order.number);
+    const found = await getOrderForReader(order.number, { accessToken: order.accessToken });
     expect(found?.order.poNumber).toBe('PO-99213');
     expect(found?.order.stripeSessionId).toBeNull();
     expect(found?.items).toHaveLength(1);
@@ -193,7 +203,7 @@ describe('purchase order checkout', () => {
       poNumber: 'PO-1',
     });
 
-    const found = await getOrderByNumber(order.number);
+    const found = await getOrderForReader(order.number, { accessToken: order.accessToken });
     const item = found?.items[0];
     expect(item?.variantSkuSnapshot).toBe('TB-HIST-6100-S');
     expect(item?.productNameSnapshot).toContain('Streamline Connector for SQL Server');
@@ -273,7 +283,7 @@ describe('card checkout order', () => {
     expect(order.status).toBe('pending_payment');
 
     await markOrderPaid(order.id, 'cs_test_123');
-    const found = await getOrderByNumber(order.number);
+    const found = await getOrderForReader(order.number, { accessToken: order.accessToken });
     expect(found?.order.status).toBe('paid');
     expect(found?.order.stripeSessionId).toBe('cs_test_123');
   });
@@ -326,5 +336,157 @@ describe('housekeeping', () => {
       const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
       expect(items.length, order.number).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('an order number is not a credential (F-01)', () => {
+  async function place() {
+    return placeOrder({
+      lines: [{ variantId, qty: 1 }],
+      email: 'victim@example.com',
+      companyName: 'Northfield Processing',
+      paymentMethod: 'purchase_order',
+      poNumber: 'PO-SECRET-1',
+    });
+  }
+
+  it('refuses a stranger holding only the order number', async () => {
+    const order = await place();
+    // Exactly what an attacker has: the number, guessed from the sequence.
+    expect(await getOrderForReader(order.number, {})).toBeNull();
+  });
+
+  it('refuses a wrong token', async () => {
+    const order = await place();
+    expect(
+      await getOrderForReader(order.number, {
+        accessToken: '00000000-0000-4000-8000-000000000000',
+      }),
+    ).toBeNull();
+  });
+
+  it('allows the token from the confirmation link', async () => {
+    const order = await place();
+    const found = await getOrderForReader(order.number, { accessToken: order.accessToken });
+    expect(found?.order.poNumber).toBe('PO-SECRET-1');
+  });
+
+  it('gives every order a different token', async () => {
+    const a = await place();
+    const b = await place();
+    expect(a.accessToken).not.toBe(b.accessToken);
+  });
+
+  it('allows the signed-in owner without a token', async () => {
+    const owner = firstRow<{ id: string }>(
+      await db.execute(sql`select id from users where role = 'buyer' limit 1`),
+    )!;
+    const order = await placeOrder({
+      lines: [{ variantId, qty: 1 }],
+      email: 'buyer@example.com',
+      userId: owner.id,
+      paymentMethod: 'purchase_order',
+      poNumber: 'PO-OWNED-1',
+    });
+    const found = await getOrderForReader(order.number, {
+      viewerId: owner.id,
+      viewerRole: 'buyer',
+    });
+    expect(found?.order.number).toBe(order.number);
+  });
+
+  it('refuses a different signed-in buyer', async () => {
+    const owner = firstRow<{ id: string }>(
+      await db.execute(sql`select id from users where role = 'buyer' limit 1`),
+    )!;
+    const stranger = firstRow<{ id: string }>(
+      await db.execute(sql`select id from users where role = 'sales' limit 1`),
+    )!;
+    const order = await placeOrder({
+      lines: [{ variantId, qty: 1 }],
+      email: 'buyer@example.com',
+      userId: owner.id,
+      paymentMethod: 'purchase_order',
+      poNumber: 'PO-OWNED-2',
+    });
+    // `sales` is staff, so it may read — the case that must fail is a peer
+    // buyer, which the role helper already encodes.
+    expect(
+      await getOrderForReader(order.number, { viewerId: stranger.id, viewerRole: 'buyer' }),
+    ).toBeNull();
+  });
+
+  it('returns null for an order that does not exist, same as for one you cannot see', async () => {
+    expect(await getOrderForReader('TB-000000-000000', {})).toBeNull();
+  });
+});
+
+describe('card payments are recorded (F-03)', () => {
+  async function pendingOrder() {
+    return placeOrder({
+      lines: [{ variantId, qty: 2 }],
+      email: 'buyer@example.com',
+      paymentMethod: 'card',
+    });
+  }
+
+  it('starts as pending_payment', async () => {
+    const order = await pendingOrder();
+    expect(order.status).toBe('pending_payment');
+  });
+
+  it('marks the order paid for the right amount', async () => {
+    const order = await pendingOrder();
+    const outcome = await markOrderPaid(order.id, 'cs_test_1', order.subtotalCents);
+    expect(outcome).toMatchObject({ status: 'paid' });
+
+    const found = await getOrderForReader(order.number, { accessToken: order.accessToken });
+    expect(found?.order.status).toBe('paid');
+    expect(found?.order.stripeSessionId).toBe('cs_test_1');
+  });
+
+  it('is idempotent — a redelivered webhook does not pay twice', async () => {
+    const order = await pendingOrder();
+    await markOrderPaid(order.id, 'cs_test_2', order.subtotalCents);
+    const second = await markOrderPaid(order.id, 'cs_test_2', order.subtotalCents);
+    expect(second).toMatchObject({ status: 'already_paid' });
+
+    const entries = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.resource, `order:${order.id}`));
+    expect(entries.filter((e) => e.action === 'order.paid')).toHaveLength(1);
+  });
+
+  it('refuses a payment for the wrong amount', async () => {
+    const order = await pendingOrder();
+    const outcome = await markOrderPaid(order.id, 'cs_test_3', 100);
+    expect(outcome).toMatchObject({ status: 'amount_mismatch', paidCents: 100 });
+
+    const found = await getOrderForReader(order.number, { accessToken: order.accessToken });
+    expect(found?.order.status).toBe('pending_payment');
+  });
+
+  it('will not pay an order that is not awaiting payment', async () => {
+    const po = await placeOrder({
+      lines: [{ variantId, qty: 1 }],
+      email: 'buyer@example.com',
+      paymentMethod: 'purchase_order',
+      poNumber: 'PO-1',
+    });
+    expect(await markOrderPaid(po.id, 'cs_test_4')).toMatchObject({ status: 'not_payable' });
+  });
+
+  it('reports an unknown order rather than throwing', async () => {
+    expect(
+      await markOrderPaid('00000000-0000-4000-8000-000000000000', 'cs_test_5'),
+    ).toMatchObject({ status: 'not_found' });
+  });
+
+  it('cancels an order whose payment failed', async () => {
+    const order = await pendingOrder();
+    expect(await markOrderPaymentFailed(order.id)).toBe(true);
+    const found = await getOrderForReader(order.number, { accessToken: order.accessToken });
+    expect(found?.order.status).toBe('cancelled');
   });
 });

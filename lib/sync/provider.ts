@@ -87,7 +87,7 @@ export class SimulatedProvider implements SubscriptionProvider {
 
   listActiveSubscriptions(): Promise<ProviderSubscription[]> {
     const live = [...this.store.values()]
-      .filter((s) => s.status === 'active' || s.status === 'trialing' || s.status === 'past_due')
+      .filter((s) => LIVE_PROVIDER_STATUSES.has(s.status))
       .map((s) => ({ ...s }));
     return Promise.resolve(live);
   }
@@ -125,6 +125,29 @@ export function mapStripeStatus(status: string): ProviderSubscriptionStatus {
   return 'canceled';
 }
 
+/** Carries the status so a 404 can be told apart from an outage. */
+export class StripeHttpError extends Error {
+  constructor(
+    readonly path: string,
+    readonly status: number,
+  ) {
+    super(`stripe ${path} responded ${status}`);
+    this.name = 'StripeHttpError';
+  }
+}
+
+/**
+ * What counts as live, shared by the provider and the reconciler.
+ *
+ * Defined once because the two disagreeing is what produced phantom drift:
+ * the provider filtered on `active`, the reconciler counted three statuses.
+ */
+export const LIVE_PROVIDER_STATUSES: ReadonlySet<ProviderSubscriptionStatus> = new Set([
+  'active',
+  'trialing',
+  'past_due',
+]);
+
 export class StripeProvider implements SubscriptionProvider {
   readonly name = 'stripe';
 
@@ -141,7 +164,7 @@ export class StripeProvider implements SubscriptionProvider {
       },
     });
     if (!response.ok) {
-      throw new Error(`stripe ${path} responded ${response.status}`);
+      throw new StripeHttpError(path, response.status);
     }
     return (await response.json()) as T;
   }
@@ -163,22 +186,71 @@ export class StripeProvider implements SubscriptionProvider {
     };
   }
 
+  /**
+   * Only a 404 means "no such subscription".
+   *
+   * This used to be `try { … } catch { return null }`, which reported a 500, a
+   * 429, a timeout and a DNS failure identically to a genuine 404. Downstream
+   * that null is read as authoritative — "the provider does not have it, not
+   * retryable" — and the event is settled. So a transient blip silently and
+   * permanently discarded a subscription update: no retry, no dead letter,
+   * nothing on the drift dashboard. Exactly the missing-signal failure this
+   * whole phase exists to defend against.
+   *
+   * Everything that is not a 404 now throws, so the backoff and dead-letter
+   * machinery that was already built and tested finally gets reached.
+   */
   async fetchSubscription(id: string): Promise<ProviderSubscription | null> {
     try {
       const raw = await this.get<StripeSubscriptionPayload>(
         `/subscriptions/${encodeURIComponent(id)}?expand[]=customer`,
       );
       return StripeProvider.toSubscription(raw);
-    } catch {
-      return null;
+    } catch (error) {
+      if (error instanceof StripeHttpError && error.status === 404) return null;
+      throw error;
     }
   }
 
+  /**
+   * Every live subscription, across every page.
+   *
+   * Two bugs lived in the three lines this replaces. It read one page of 100
+   * and never looked at `has_more`, so at 101 subscriptions the reconciler
+   * began reporting real customers as drift, nightly and silently. And it
+   * asked Stripe for `status=active` while the reconciler treats
+   * active, trialing and past_due as live — so every trialing and past-due
+   * subscription was absent from the remote side and flagged as a discrepancy
+   * that was not one. The one job of this call is to be trustworthy.
+   */
   async listActiveSubscriptions(): Promise<ProviderSubscription[]> {
-    const page = await this.get<{ data: StripeSubscriptionPayload[] }>(
-      '/subscriptions?status=active&limit=100&expand[]=data.customer',
-    );
-    return page.data.map((raw) => StripeProvider.toSubscription(raw));
+    const all: ProviderSubscription[] = [];
+    let startingAfter: string | undefined;
+
+    // A guard, not a limit: at 100 per page this is 10,000 subscriptions, and
+    // an unbounded loop against a paginating API is its own outage.
+    for (let page = 0; page < 100; page += 1) {
+      const query = new URLSearchParams({ limit: '100', 'expand[]': 'data.customer' });
+      if (startingAfter) query.set('starting_after', startingAfter);
+
+      const result = await this.get<{
+        data: StripeSubscriptionPayload[];
+        has_more?: boolean;
+      }>(`/subscriptions?${query.toString()}`);
+
+      for (const raw of result.data) {
+        const subscription = StripeProvider.toSubscription(raw);
+        // Filtered here rather than in the query: Stripe's status filter takes
+        // one value, and the set the reconciler calls live has three.
+        if (LIVE_PROVIDER_STATUSES.has(subscription.status)) all.push(subscription);
+      }
+
+      if (!result.has_more || result.data.length === 0) break;
+      startingAfter = result.data[result.data.length - 1]?.id;
+      if (!startingAfter) break;
+    }
+
+    return all;
   }
 }
 

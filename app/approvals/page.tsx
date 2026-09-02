@@ -59,9 +59,17 @@ function Button({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default async function QuoteApprovalPage() {
+export default async function QuoteApprovalPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ notice?: string }>;
+}) {
   await requireQuoteApprover('/approvals');
-  const [pending, decided] = await Promise.all([pendingQuotes(), recentlyDecided()]);
+  const [{ notice }, pending, decided] = await Promise.all([
+    searchParams,
+    pendingQuotes(),
+    recentlyDecided(),
+  ]);
 
   return (
     <div className="space-y-8">
@@ -74,6 +82,16 @@ export default async function QuoteApprovalPage() {
           with the sales or admin role choosing.
         </p>
       </header>
+
+      {notice ? (
+        <p
+          role="status"
+          data-testid="approval-notice"
+          className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+        >
+          {notice}
+        </p>
+      ) : null}
 
       <section aria-labelledby="pending" className="space-y-3">
         <h2 id="pending" className="text-xl font-semibold">

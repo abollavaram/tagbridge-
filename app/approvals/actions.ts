@@ -2,6 +2,7 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { requireQuoteApprover } from '@/lib/auth/guards';
 import { canApproveQuotes } from '@/lib/auth/roles';
@@ -9,7 +10,11 @@ import { getDatabase } from '@/lib/db';
 import { firstRow } from '@/lib/db/rows';
 import { quoteEvents, quotes } from '@/lib/db/schema';
 import { writeAudit } from '@/lib/agent/audit';
-import { assertTransition, QUOTE_STATUSES } from '@/lib/commerce/quote-state';
+import {
+  assertTransition,
+  QUOTE_STATUSES,
+  QuoteTransitionError,
+} from '@/lib/commerce/quote-state';
 
 /**
  * Quote approval.
@@ -29,6 +34,19 @@ const decisionSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
+/**
+ * How a failed decision reaches the operator.
+ *
+ * A server action can return state, but only a client component can read it,
+ * and this page deliberately ships no client JavaScript. Redirecting with the
+ * message keeps that property and still means a lost race is visible — which
+ * is the whole point: silently reporting success for a transition that did not
+ * happen is the bug being fixed.
+ */
+function fail(message: string): never {
+  redirect(`/approvals?notice=${encodeURIComponent(message)}`);
+}
+
 async function decide(formData: FormData): Promise<void> {
   const viewer = await requireQuoteApprover('/approvals');
 
@@ -37,7 +55,7 @@ async function decide(formData: FormData): Promise<void> {
     to: formData.get('to'),
     reason: formData.get('reason') || undefined,
   });
-  if (!parsed.success) return;
+  if (!parsed.success) fail('That decision was not understood.');
 
   const db = await getDatabase();
   const existing = firstRow<{ status: string; user_id: string }>(
@@ -45,21 +63,27 @@ async function decide(formData: FormData): Promise<void> {
       select status::text as status, user_id from quotes where id = ${parsed.data.quoteId}::uuid limit 1
     `),
   );
-  if (!existing) return;
+  if (!existing) fail('That quote no longer exists.');
 
   // Throws on an illegal edge. The UI only offers legal ones, but the action
   // does not trust the UI it rendered.
-  const transition = assertTransition(
+  let transition;
+  try {
+    transition = assertTransition(
     existing.status as (typeof QUOTE_STATUSES)[number],
     parsed.data.to,
-    {
-      isOwner: existing.user_id === viewer.id,
-      isApprover: canApproveQuotes(viewer.role),
-      isSystem: false,
-    },
-  );
+      {
+        isOwner: existing.user_id === viewer.id,
+        isApprover: canApproveQuotes(viewer.role),
+        isSystem: false,
+      },
+    );
+  } catch (error) {
+    if (error instanceof QuoteTransitionError) fail(error.message);
+    throw error;
+  }
 
-  await db
+  const moved = await db
     .update(quotes)
     .set({ status: parsed.data.to, updatedAt: new Date() })
     .where(
@@ -69,7 +93,17 @@ async function decide(formData: FormData): Promise<void> {
         // updates nothing rather than overwriting their decision.
         eq(quotes.status, existing.status as (typeof QUOTE_STATUSES)[number]),
       ),
-    );
+    )
+    .returning({ id: quotes.id });
+
+  // ...and if it updated nothing, say so. This used to fall straight through
+  // to the event and audit writes: the page said approved, the audit log said
+  // approved, and the quote was still pending because a colleague had declined
+  // it two seconds earlier.
+  if (moved.length === 0) {
+    revalidatePath('/approvals');
+    fail('That quote was changed by someone else. Nothing was applied.');
+  }
 
   await db.insert(quoteEvents).values({
     quoteId: parsed.data.quoteId,

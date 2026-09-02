@@ -2,6 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { getDatabase } from '@/lib/db';
 import { toRows } from '@/lib/db/rows';
 import { auditLog, erpSyncRecords } from '@/lib/db/schema';
+import { LIVE_PROVIDER_STATUSES } from './provider';
 import type { ProviderSubscription, SubscriptionProvider } from './provider';
 
 /**
@@ -45,7 +46,9 @@ export interface ReconciliationReport {
   tookMs: number;
 }
 
-const LIVE_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing', 'past_due']);
+// The same set the provider filters on. Two definitions drifting apart is what
+// made trialing and past-due subscriptions look like drift when they were fine.
+const LIVE_STATUSES: ReadonlySet<string> = LIVE_PROVIDER_STATUSES;
 
 interface LocalRow {
   subscription_id: string;

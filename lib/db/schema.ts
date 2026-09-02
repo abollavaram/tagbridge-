@@ -379,6 +379,15 @@ export const orders = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     number: text('number').notNull().unique(),
+    /**
+     * Unguessable key for the confirmation page.
+     *
+     * `number` comes from a sequence and is therefore strictly contiguous —
+     * anyone who places one order can walk the whole book. It stays the
+     * human-readable reference on the paperwork; this is what actually
+     * authorises reading the order without a session.
+     */
+    accessToken: uuid('access_token').notNull().defaultRandom(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     email: text('email').notNull(),
     companyName: text('company_name'),

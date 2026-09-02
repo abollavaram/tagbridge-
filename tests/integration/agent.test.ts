@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentModel, ModelTurn } from '@/lib/agent/model';
 import type { ToolCall } from '@/lib/agent/types';
@@ -524,5 +524,54 @@ describe('the deterministic planner stands alone', () => {
       model: new DeterministicPlanner(),
     });
     expect(result.invocations.map((i) => i.name)).not.toContain('sendQuoteEmail');
+  });
+});
+
+describe('a lost transition is not reported as a successful one (F-08)', () => {
+  it('throws when the quote moved between the read and the write', async () => {
+    await runAgent({
+      principal: buyer,
+      request: 'quote it',
+      model: new ScriptedModel(call('createQuote', { lines: [{ variantId, qty: 1 }] })),
+    });
+    const quote = (await db.select().from(quotes))[0]!;
+
+    // Somebody else decides it first. The agent still holds the old status.
+    await db
+      .update(quotes)
+      .set({ status: 'rejected' })
+      .where(eq(quotes.id, quote.id));
+
+    const result = await runAgent({
+      principal: admin,
+      request: 'approve it',
+      model: new ScriptedModel(call('updateQuoteStatus', { quoteId: quote.id, to: 'sent' })),
+    });
+
+    // Used to return {from, to, event} and write an audit row for a
+    // transition that never happened.
+    expect(result.invocations[0]?.ok).toBe(false);
+    expect(result.invocations[0]?.code).toBe('illegal_transition');
+  });
+
+  it('writes no event or audit row for a transition that did not happen', async () => {
+    await runAgent({
+      principal: buyer,
+      request: 'quote it',
+      model: new ScriptedModel(call('createQuote', { lines: [{ variantId, qty: 1 }] })),
+    });
+    const quote = (await db.select().from(quotes))[0]!;
+    await db.update(quotes).set({ status: 'rejected' }).where(eq(quotes.id, quote.id));
+
+    const before = (await db.select().from(quoteEvents)).length;
+    await runAgent({
+      principal: admin,
+      request: 'approve it',
+      model: new ScriptedModel(call('updateQuoteStatus', { quoteId: quote.id, to: 'sent' })),
+    });
+
+    expect((await db.select().from(quoteEvents)).length).toBe(before);
+    const entries = await db.select().from(auditLog);
+    expect(entries.some((e) => e.action === 'quote.transition')).toBe(false);
   });
 });

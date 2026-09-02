@@ -19,7 +19,12 @@ export async function POST(
   }
   try {
     const { id } = await params;
-    return NextResponse.json(await cancelCheckoutSession(id, siteOrigin(request.url)));
+    return NextResponse.json(
+      await cancelCheckoutSession(id, siteOrigin(request.url), {
+        userId: viewer.id,
+        role: viewer.role,
+      }),
+    );
   } catch (error) {
     if (error instanceof AcpError) {
       return NextResponse.json(acpErrorBody(error), { status: error.status });

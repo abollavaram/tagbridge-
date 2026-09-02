@@ -14,6 +14,7 @@ import { lineItemsRequestSchema, priceLines, subtotalCents } from '@/lib/commerc
 import {
   assertTransition,
   QUOTE_STATUSES,
+  QuoteTransitionError,
   stateAfterSubmit,
 } from '@/lib/commerce/quote-state';
 
@@ -371,35 +372,43 @@ export const createQuoteTool: AgentTool<
     const status = stateAfterSubmit(subtotal, 'agent');
 
     const db = await getDatabase();
-    const created = await db
-      .insert(quotes)
-      .values({
-        number: await nextQuoteNumber(),
-        userId: context.principal.userId,
-        status,
-        subtotalCents: subtotal,
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        agentNotes: input.notes ?? null,
-      })
-      .returning({ id: quotes.id, number: quotes.number, status: quotes.status });
+    const number = await nextQuoteNumber();
 
-    const quote = created[0];
-    if (!quote) throw new Error('quote insert returned nothing');
+    // One unit of work: a quote row without its lines is a total nobody can
+    // account for, and the agent would report it as drafted either way.
+    const quote = await db.transaction(async (tx) => {
+      const created = await tx
+        .insert(quotes)
+        .values({
+          number,
+          userId: context.principal.userId,
+          status,
+          subtotalCents: subtotal,
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+          agentNotes: input.notes ?? null,
+        })
+        .returning({ id: quotes.id, number: quotes.number, status: quotes.status });
 
-    await db.insert(quoteLineItems).values(
-      priced.map((line) => ({
-        quoteId: quote.id,
-        variantId: line.variantId,
-        qty: line.qty,
-        unitPriceCents: line.unitPriceCents,
-      })),
-    );
+      const row = created[0];
+      if (!row) throw new Error('quote insert returned nothing');
 
-    await db.insert(quoteEvents).values({
-      quoteId: quote.id,
-      type: status === 'pending_approval' ? 'submitted_for_approval' : 'drafted',
-      actor: 'agent',
-      payload: { runId: context.runId, subtotalCents: subtotal, lines: priced.length },
+      await tx.insert(quoteLineItems).values(
+        priced.map((line) => ({
+          quoteId: row.id,
+          variantId: line.variantId,
+          qty: line.qty,
+          unitPriceCents: line.unitPriceCents,
+        })),
+      );
+
+      await tx.insert(quoteEvents).values({
+        quoteId: row.id,
+        type: status === 'pending_approval' ? 'submitted_for_approval' : 'drafted',
+        actor: 'agent',
+        payload: { runId: context.runId, subtotalCents: subtotal, lines: priced.length },
+      });
+
+      return row;
     });
 
     await writeAudit({
@@ -473,10 +482,23 @@ export const updateQuoteStatusTool: AgentTool<
       isSystem: false,
     });
 
-    await db
+    // The compare-and-set was already right; nobody checked whether it hit a
+    // row. When it did not — because somebody else moved the quote between the
+    // read and the write — this carried on writing the event, the audit entry
+    // and a success response for a transition that never happened.
+    const moved = await db
       .update(quotes)
       .set({ status: input.to })
-      .where(and(eq(quotes.id, input.quoteId), eq(quotes.status, existing.status)));
+      .where(and(eq(quotes.id, input.quoteId), eq(quotes.status, existing.status)))
+      .returning({ id: quotes.id });
+
+    if (moved.length === 0) {
+      throw new QuoteTransitionError(
+        existing.status,
+        input.to,
+        'the quote was changed by someone else while this was being applied',
+      );
+    }
 
     await db.insert(quoteEvents).values({
       quoteId: input.quoteId,

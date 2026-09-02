@@ -74,7 +74,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const session = await createCheckoutSession(parsed.data, viewer.id, siteOrigin(request.url));
+    const session = await createCheckoutSession(
+      parsed.data,
+      { userId: viewer.id, role: viewer.role },
+      siteOrigin(request.url),
+    );
     log.info({ sessionId: session.id, status: session.status }, 'acp session created');
     return NextResponse.json(session, { status: 201 });
   } catch (error) {

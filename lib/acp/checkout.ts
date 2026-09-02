@@ -4,6 +4,14 @@ import { getDatabase } from '@/lib/db';
 import { firstRow, toRows } from '@/lib/db/rows';
 import { quoteEvents, quoteLineItems, quotes } from '@/lib/db/schema';
 import { writeAudit } from '@/lib/agent/audit';
+import { canApproveQuotes, canReadOwnedResource, type Role } from '@/lib/auth/roles';
+import {
+  assertTransition,
+  QuoteTransitionError,
+  type QUOTE_STATUSES,
+} from '@/lib/commerce/quote-state';
+
+type QuoteStatus = (typeof QUOTE_STATUSES)[number];
 import { nextQuoteNumber } from '@/lib/agent/tools';
 import { priceLines, subtotalCents } from '@/lib/commerce/pricing';
 import { laddersForVariants } from '@/lib/commerce/catalog';
@@ -82,6 +90,25 @@ export interface AcpSession {
   messages: { type: string; content_type: string; content: string; severity?: string }[];
   links: { type: string; url: string }[];
   capabilities: { payment: { handlers: unknown[] } };
+}
+
+/**
+ * Who is asking.
+ *
+ * Every session call takes one. The handlers used to resolve the viewer and
+ * then drop it, so any signed-in user could read, re-price and cancel anyone
+ * else's session — authentication without authorization. Making the identity a
+ * required argument means the check cannot be forgotten by a later caller,
+ * because there is nothing to pass otherwise.
+ */
+export interface AcpActor {
+  userId: string;
+  role: Role;
+}
+
+/** Staff may act on any session; a buyer only on their own. */
+function mayAct(actor: AcpActor, ownerId: string): boolean {
+  return canReadOwnedResource(actor.role, actor.userId, ownerId);
 }
 
 export class AcpError extends Error {
@@ -217,20 +244,29 @@ function sessionFrom(
   };
 }
 
-async function loadSession(id: string, origin: string): Promise<AcpSession> {
+async function loadSession(
+  id: string,
+  origin: string,
+  actor: AcpActor,
+): Promise<AcpSession> {
   const db = await getDatabase();
   const quote = firstRow<{
     id: string;
     number: string;
     status: string;
     subtotal_cents: number;
+    user_id: string;
   }>(
     await db.execute(sql`
-      select id, number, status::text as status, subtotal_cents
+      select id, number, status::text as status, subtotal_cents, user_id
       from quotes where id = ${id}::uuid limit 1
     `),
   );
-  if (!quote) throw new AcpError('session_not_found', `no checkout session ${id}`, 404);
+  // 404 rather than 403 for both misses: a 403 would confirm the id is real,
+  // which hands an attacker the enumeration they were missing.
+  if (!quote || !mayAct(actor, quote.user_id)) {
+    throw new AcpError('session_not_found', `no checkout session ${id}`, 404);
+  }
 
   const lines = toRows<{
     id: string;
@@ -271,9 +307,10 @@ async function loadSession(id: string, origin: string): Promise<AcpSession> {
 
 export async function createCheckoutSession(
   input: z.infer<typeof createSessionSchema>,
-  userId: string,
+  actor: AcpActor,
   origin: string,
 ): Promise<AcpSession> {
+  const userId = actor.userId;
   const lines = input.line_items.map((l) => ({ variantId: l.item.id, qty: l.quantity }));
   const { priced, byId } = await price(lines);
   const subtotal = subtotalCents(priced);
@@ -323,25 +360,32 @@ export async function createCheckoutSession(
   });
 
   void byId;
-  return loadSession(quote.id, origin);
+  return loadSession(quote.id, origin, actor);
 }
 
-export async function getCheckoutSession(id: string, origin: string): Promise<AcpSession> {
-  return loadSession(id, origin);
+export async function getCheckoutSession(
+  id: string,
+  origin: string,
+  actor: AcpActor,
+): Promise<AcpSession> {
+  return loadSession(id, origin, actor);
 }
 
 export async function updateCheckoutSession(
   id: string,
   input: z.infer<typeof updateSessionSchema>,
   origin: string,
+  actor: AcpActor,
 ): Promise<AcpSession> {
   const db = await getDatabase();
-  const quote = firstRow<{ id: string; status: string }>(
+  const quote = firstRow<{ id: string; status: string; user_id: string }>(
     await db.execute(
-      sql`select id, status::text as status from quotes where id = ${id}::uuid limit 1`,
+      sql`select id, status::text as status, user_id from quotes where id = ${id}::uuid limit 1`,
     ),
   );
-  if (!quote) throw new AcpError('session_not_found', `no checkout session ${id}`, 404);
+  if (!quote || !mayAct(actor, quote.user_id)) {
+    throw new AcpError('session_not_found', `no checkout session ${id}`, 404);
+  }
   if (quote.status !== 'draft') {
     throw new AcpError(
       'session_not_modifiable',
@@ -354,38 +398,81 @@ export async function updateCheckoutSession(
   const { priced } = await price(lines);
   const subtotal = subtotalCents(priced);
 
-  await db.delete(quoteLineItems).where(sql`quote_id = ${id}::uuid`);
-  await db.insert(quoteLineItems).values(
-    priced.map((line) => ({
-      quoteId: id,
-      variantId: line.variantId,
-      qty: line.qty,
-      unitPriceCents: line.unitPriceCents,
-    })),
-  );
-  await db
-    .update(quotes)
-    .set({ subtotalCents: subtotal, updatedAt: new Date() })
-    .where(sql`id = ${id}::uuid`);
-
-  return loadSession(id, origin);
-}
-
-export async function cancelCheckoutSession(id: string, origin: string): Promise<AcpSession> {
-  const db = await getDatabase();
-  const quote = firstRow<{ status: string }>(
-    await db.execute(sql`select status::text as status from quotes where id = ${id}::uuid limit 1`),
-  );
-  if (!quote) throw new AcpError('session_not_found', `no checkout session ${id}`, 404);
-
-  await db.update(quotes).set({ status: 'rejected' }).where(sql`id = ${id}::uuid`);
-  await db.insert(quoteEvents).values({
-    quoteId: id,
-    type: 'quote.withdrawn',
-    actor: 'system',
-    payload: { via: 'acp' },
+  // Delete-then-insert in one transaction. Apart, a failure between them
+  // leaves a priced quote with no lines at all — a total nobody can account
+  // for, which is worse than the update simply failing.
+  await db.transaction(async (tx) => {
+    await tx.delete(quoteLineItems).where(sql`quote_id = ${id}::uuid`);
+    await tx.insert(quoteLineItems).values(
+      priced.map((line) => ({
+        quoteId: id,
+        variantId: line.variantId,
+        qty: line.qty,
+        unitPriceCents: line.unitPriceCents,
+      })),
+    );
+    await tx
+      .update(quotes)
+      .set({ subtotalCents: subtotal, updatedAt: new Date() })
+      .where(sql`id = ${id}::uuid`);
   });
 
-  const session = await loadSession(id, origin);
+  return loadSession(id, origin, actor);
+}
+
+export async function cancelCheckoutSession(
+  id: string,
+  origin: string,
+  actor: AcpActor,
+): Promise<AcpSession> {
+  const db = await getDatabase();
+  const quote = firstRow<{ status: QuoteStatus; user_id: string }>(
+    await db.execute(
+      sql`select status::text as status, user_id from quotes where id = ${id}::uuid limit 1`,
+    ),
+  );
+  if (!quote || !mayAct(actor, quote.user_id)) {
+    throw new AcpError('session_not_found', `no checkout session ${id}`, 404);
+  }
+
+  // Through the state machine, like every other caller. Cancelling used to be
+  // a raw UPDATE, so a converted or already-rejected quote could be
+  // "cancelled" repeatedly — the one endpoint an external agent talks to was
+  // the one place the rules did not apply.
+  let transition;
+  try {
+    transition = assertTransition(quote.status, 'rejected', {
+      isOwner: quote.user_id === actor.userId,
+      isApprover: canApproveQuotes(actor.role),
+      isSystem: false,
+    });
+  } catch (error) {
+    if (error instanceof QuoteTransitionError) {
+      throw new AcpError('session_not_cancelable', error.message, 409);
+    }
+    throw error;
+  }
+
+  await db.transaction(async (tx) => {
+    const moved = await tx
+      .update(quotes)
+      .set({ status: 'rejected', updatedAt: new Date() })
+      .where(sql`id = ${id}::uuid and status = ${quote.status}`)
+      .returning({ id: quotes.id });
+
+    // Somebody else moved it between the read and the write.
+    if (moved.length === 0) {
+      throw new AcpError('session_changed', 'the session changed while you were cancelling it', 409);
+    }
+
+    await tx.insert(quoteEvents).values({
+      quoteId: id,
+      type: transition.event,
+      actor: 'system',
+      payload: { via: 'acp', from: quote.status, to: 'rejected' },
+    });
+  });
+
+  const session = await loadSession(id, origin, actor);
   return { ...session, status: 'canceled' };
 }

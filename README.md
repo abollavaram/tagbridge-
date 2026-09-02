@@ -19,7 +19,7 @@ reported as such below — the search lift threshold, and the demo video.
 | …against a default full-text baseline | **0.52** |
 | Agent guardrail hold rate, 10 adversarial scenarios | **100%** |
 | Products in catalog | 50 |
-| Tests | 554 unit + integration, 78 end-to-end |
+| Tests | 592 unit + integration, 85 end-to-end |
 | Lighthouse (mobile, product page) | 99 / 100 / 100 / 100 |
 
 ## Search evaluation

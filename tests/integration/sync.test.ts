@@ -8,7 +8,8 @@ delete process.env.DATABASE_URL;
 
 const { getDatabase } = await import('@/lib/db');
 const { firstRow, toRows } = await import('@/lib/db/rows');
-const { erpSyncRecords, subscriptions, webhookEvents } = await import('@/lib/db/schema');
+const { auditLog, erpSyncRecords, orderItems, orders, subscriptions, webhookEvents } =
+  await import('@/lib/db/schema');
 const {
   MAX_ATTEMPTS,
   deadLetterQueue,
@@ -26,6 +27,7 @@ const { breakSync, seedSyncDemo } = await import('@/lib/sync/demo');
 type Db = Awaited<ReturnType<typeof getDatabase>>;
 let db: Db;
 let variantSku: string;
+let variantId: string;
 
 /** A provider that always throws, for exercising the retry path. */
 class FailingProvider extends SimulatedProvider {
@@ -72,12 +74,19 @@ beforeAll(async () => {
   );
   variantSku = row?.sku ?? '';
   expect(variantSku).not.toBe('');
+  variantId =
+    firstRow<{ id: string }>(
+      await db.execute(sql`select id from product_variants order by sku limit 1`),
+    )?.id ?? '';
 }, 180_000);
 
 beforeEach(async () => {
   await db.delete(erpSyncRecords);
   await db.delete(subscriptions);
   await db.delete(webhookEvents);
+  await db.delete(orderItems);
+  await db.delete(orders);
+  await db.delete(auditLog);
   simulatedProvider().clear();
 });
 
@@ -497,5 +506,112 @@ describe('the demo harness', () => {
     await breakSync('billed_but_unknown');
     const report = await reconcile(simulatedProvider());
     expect(report.findings.map((f) => f.kind)).toContain('unknown_locally');
+  });
+});
+
+describe('card payments flow through the webhook (F-03)', () => {
+  async function pendingOrder() {
+    const { placeOrder } = await import('@/lib/commerce/orders');
+    return placeOrder({
+      lines: [{ variantId, qty: 2 }],
+      email: 'buyer@example.com',
+      paymentMethod: 'card',
+    });
+  }
+
+  function paymentEvent(
+    id: string,
+    orderId: string,
+    overrides: Record<string, unknown> = {},
+    type = 'checkout.session.completed',
+  ) {
+    return {
+      id,
+      type,
+      createdAt: new Date(),
+      payload: {
+        data: {
+          object: {
+            id: 'cs_live_1',
+            client_reference_id: orderId,
+            payment_status: 'paid',
+            ...overrides,
+          },
+        },
+      },
+    };
+  }
+
+  it('marks the order paid', async () => {
+    const order = await pendingOrder();
+    await recordEvent(
+      paymentEvent('evt_pay_1', order.id, { amount_total: order.subtotalCents }),
+    );
+
+    const outcome = await processEvent('evt_pay_1', new SimulatedProvider());
+
+    expect(outcome.status).toBe('applied');
+    const row = firstRow<{ status: string }>(
+      await db.execute(
+        sql`select status::text as status from orders where id = ${order.id}::uuid`,
+      ),
+    );
+    expect(row?.status).toBe('paid');
+  });
+
+  it('was silently ignored before — the type is handled now', async () => {
+    const order = await pendingOrder();
+    await recordEvent(
+      paymentEvent('evt_pay_2', order.id, { amount_total: order.subtotalCents }),
+    );
+    const outcome = await processEvent('evt_pay_2', new SimulatedProvider());
+    // Used to be `ignored: unhandled type checkout.session.completed`.
+    expect(outcome.status).not.toBe('ignored');
+  });
+
+  it('refuses a payment for the wrong amount and leaves it for an operator', async () => {
+    const order = await pendingOrder();
+    await recordEvent(paymentEvent('evt_pay_3', order.id, { amount_total: 100 }));
+
+    const outcome = await processEvent('evt_pay_3', new SimulatedProvider());
+
+    // Retryable on purpose: this lands in the dead-letter queue where someone
+    // sees it, rather than being settled as though it were fine.
+    expect(outcome.status).toBe('retry');
+    const row = firstRow<{ status: string }>(
+      await db.execute(
+        sql`select status::text as status from orders where id = ${order.id}::uuid`,
+      ),
+    );
+    expect(row?.status).toBe('pending_payment');
+    const entries = await db.select().from(auditLog);
+    expect(entries.some((e) => e.action === 'order.payment_mismatch')).toBe(true);
+  });
+
+  it('does not pay an order whose payment is still processing', async () => {
+    const order = await pendingOrder();
+    await recordEvent(
+      paymentEvent('evt_pay_4', order.id, {
+        payment_status: 'unpaid',
+        amount_total: order.subtotalCents,
+      }),
+    );
+    const outcome = await processEvent('evt_pay_4', new SimulatedProvider());
+    expect(outcome.status).toBe('ignored');
+  });
+
+  it('cancels an order whose payment failed', async () => {
+    const order = await pendingOrder();
+    await recordEvent(
+      paymentEvent('evt_pay_5', order.id, {}, 'checkout.session.async_payment_failed'),
+    );
+    await processEvent('evt_pay_5', new SimulatedProvider());
+
+    const row = firstRow<{ status: string }>(
+      await db.execute(
+        sql`select status::text as status from orders where id = ${order.id}::uuid`,
+      ),
+    );
+    expect(row?.status).toBe('cancelled');
   });
 });
