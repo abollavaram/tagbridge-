@@ -9,8 +9,9 @@ retrieval with a protocol and vendor synonym layer, a quote path because industr
 buying is quote-shaped rather than cart-shaped, and subscription-to-ERP sync that
 survives the failure modes real integrations hit.
 
-**Status: all 5 phases complete.** Two acceptance criteria are not met and are
-reported as such below — the search lift threshold, and the demo video.
+**Status: all 5 phases complete, and an external review's findings closed.** Two
+acceptance criteria are not met and are reported as such below — the search lift
+threshold, and the demo video.
 
 | | |
 |---|---|
@@ -19,7 +20,7 @@ reported as such below — the search lift threshold, and the demo video.
 | …against a default full-text baseline | **0.52** |
 | Agent guardrail hold rate, 10 adversarial scenarios | **100%** |
 | Products in catalog | 50 |
-| Tests | 613 unit + integration, 98 end-to-end |
+| Tests | 613 unit + integration, 101 end-to-end |
 | Lighthouse (mobile, product page) | 99 / 100 / 100 / 100 |
 
 ## Search evaluation
@@ -220,6 +221,72 @@ Sessions are JWT-backed with `httpOnly`, `sameSite=lax`, `secure` in production,
 30-day rolling window. The Drizzle adapter persists users, accounts and magic-link
 tokens whenever a real database is configured.
 
+## The shape of it
+
+```
+                     browser            Claude Desktop        any UCP agent
+                        │                     │                     │
+                        │ HTML / server       │ MCP over stdio      │ /.well-known/ucp
+                        ▼ actions             ▼ or HTTP             ▼ then REST
+        ┌───────────────────────────────────────────────────────────────────┐
+        │  Next.js App Router · middleware issues a per-request CSP nonce   │
+        └───────────────────────────────────────────────────────────────────┘
+                        │                     │                     │
+                        └──────────┬──────────┴──────────┬──────────┘
+                                   ▼                     ▼
+                        ┌──────────────────┐   ┌───────────────────┐
+                        │  agent loop      │   │  UCP / ACP        │
+                        │  8 turns, 60s    │   │  services         │
+                        └──────────────────┘   └───────────────────┘
+                                   │                     │
+                                   └──────────┬──────────┘
+                                              ▼
+                        ┌───────────────────────────────────────┐
+                        │  ONE tool registry — lib/agent/tools  │
+                        │  schema in · schema out · authz here  │
+                        └───────────────────────────────────────┘
+                                              │
+        ┌──────────────┬──────────────┬───────┴───────┬─────────────────┐
+        ▼              ▼              ▼               ▼                 ▼
+   search          compatibility   pricing        quotes            audit log
+   BM25 + dense    rule engine     price_tiers    state machine     append only
+   + RRF + rerank  deterministic   server only    illegal → throw
+        │              │              │               │                 │
+        └──────────────┴──────────────┴───────┬───────┴─────────────────┘
+                                              ▼
+                        ┌───────────────────────────────────────┐
+                        │  Postgres — pgvector + GIN FTS        │
+                        │  PGlite in-process, or DATABASE_URL   │
+                        └───────────────────────────────────────┘
+                                              ▲
+                        ┌─────────────────────┴─────────────────┐
+                        │  three crons, bearer-authenticated    │
+                        │  reconcile · expire quotes · retries  │
+                        └───────────────────────────────────────┘
+```
+
+The single tool registry is the load-bearing decision. The browser assistant, the MCP
+server and the internal agent loop are three consumers of *one* set of tool definitions,
+so there is one schema, one authorization check and one place the price rule lives. Two
+registries would mean two of each, and the second would drift.
+
+## Guardrails — what could go wrong, and what stops it
+
+| Risk | What stops it | Where |
+|---|---|---|
+| The model sets a price | No input schema accepts one, and a price-shaped field anywhere in the payload is refused rather than stripped — including the agent protocols' own spellings (`unit_amount`, `presentment_amount`) | `lib/agent/guardrails.ts`, `lib/commerce/pricing.ts` |
+| Catalogue text tells the model what to do | Retrieved text is delimited, the delimiters are neutralised inside it, and the tool allowlist is built from the registry before the model is asked anything — content cannot widen it | `wrapUntrusted`, `checkToolAllowed` |
+| A caller acts as somebody else | No input schema has a field for an identity. Every tool re-derives authorization from the session, and the loop is not the only gate | every tool in `lib/agent/tools.ts` |
+| A quote goes out without a human | Every agent-drafted quote enters `pending_approval` regardless of value — the agent is not the one deciding whether a human is needed | `stateAfterSubmit` |
+| An order is read by a stranger | Order numbers come from a sequence and are not credentials. Reading needs an unguessable token, or the signed-in owner, or staff — and a miss is a 404, so ids are not enumerable | `getOrderForReader` |
+| A runaway or expensive loop | Token, tool-call and turn budgets; an `AbortSignal` derived from the remaining wall-clock; per-IP rate limits; a circuit breaker with a real half-open probe that fails **closed to the deterministic path**, not to an error | `lib/agent/guardrails.ts`, `lib/agent/loop.ts` |
+| PII in logs and prompts | Redacted on the way into the audit log; the model never receives the buyer's identity, because it does not need it to pick a product | `redactObject` |
+| A payment recorded that did not happen | The amount Stripe reports is checked against the order's own subtotal before anything is marked paid, and a mismatch is deliberately retryable so it reaches the dead-letter queue where a person sees it | `markOrderPaid` |
+| An audit log that records fiction | `sendQuoteEmail` reports `sent: false` when no transport is configured, and logs `quote.send.unavailable` rather than `quote.send` | `lib/agent/tools.ts` |
+
+Ten adversarial scenarios exercise these on every change; the hold rate must be 100% and
+`pnpm eval:agent` fails the build below that.
+
 ## Running it
 
 From a clean clone, with Node 22 and pnpm 10:
@@ -354,10 +421,75 @@ that had been returning nothing. It also raised the BM25 baseline's compatibilit
 from 0.84 to 0.88, so the measured *lift* went down while the product got better. Worth
 knowing before optimising for a delta.
 
+**An external review found three critical security defects, all reproduced.** Worth
+recording in full, because the pattern in two of them is the same and it is the one
+worth learning.
+
+*Any stranger could read any order.* The confirmation page loaded an order by number
+with no session check and no ownership check — and order numbers come from a sequence,
+so they are strictly contiguous. Anyone who placed one order could walk the whole book:
+line items, totals, and other buyers' purchase-order numbers. The mistake was treating a
+human-readable reference as a credential. Orders now carry a random access token; the
+number stays on the paperwork and is no longer the key.
+
+*Any signed-in user could read, rewrite and cancel anyone else's checkout session.* All
+three ACP handlers resolved the viewer and then discarded it; the SQL filtered on id
+alone. Authentication without authorization, and the same shape as the one above. The
+fix that matters is not the `where user_id = ?` — it is that the actor is now a
+**required argument** to every session function, so it cannot be forgotten by a later
+caller. There is nothing else to pass.
+
+*Card payments were never recorded.* `markOrderPaid` was exported, correct, and
+referenced by exactly one thing in the repository: a test. The webhook handled
+subscription events only, so the card path was — take the money, and leave the buyer on
+a page reading "nothing has been charged yet", permanently. It was invisible only
+because no Stripe key is set on the demo.
+
+**I broke every page in the application with a Content-Security-Policy.** Adding
+`script-src 'self'` to the static headers blocks Next's own inline bootstrap scripts,
+the ones carrying the RSC payload. The server returned 200, the HTML was in the
+response, and nothing ran — every page rendered as an empty body. The e2e suite caught
+it inside the same batch, which is the entire argument for having one: a header nobody
+exercises is a header nobody notices breaking. The fix is a nonce issued per request in
+middleware, using Web Crypto rather than `node:crypto`, which fails the build outright
+on the edge runtime.
+
+**The drift detector healed its own alerts.** Reconciliation read state it had written
+itself: the first run marked a record `drifted`, the second no longer matched its own
+`state = 'synced'` filter, concluded nothing was wrong, and cleared the flag. A standing
+billing mismatch would have vanished from the dashboard every night without anyone
+fixing it. Drift is now derived only from push-time facts, never from the reconciler's
+own outputs. Found by a test that asked whether it was safe to run twice.
+
+**The MCP server never exited when its client disconnected.** It answered correctly over
+the pipe and then sat there, because PGlite holds the event loop open. Claude Desktop
+would have leaked a process on every reconnect. Only observable from outside the
+process, so the regression test spawns a real subprocess — no in-process test could have
+seen it.
+
 **Five advisories in the production dependency tree.** `postcss` (three, up to high) came
 in transitively through Next, and `nodemailer` (high) was pinned back to v8 to satisfy
 an Auth.js peer range that predates the patched release. Both are resolved with pnpm
 overrides to the patched versions; `pnpm audit --prod` is clean and CI fails on high.
+
+## The agent, demonstrated
+
+`docs/mcp-session.md` is a **recorded** session, generated by `pnpm mcp:transcript`
+rather than written by hand — re-run it and it reproduces, or the documentation is
+wrong. Eight exchanges against the stdio server, two of them refusals: a client setting
+its own price, and a client reaching for a tool its role does not have. The quote it does
+draft comes back priced by the server and `pending_approval`.
+
+The same thing is visible in a browser at `/assistant`, where the trace is the page
+rather than a debug panel. A screen recording is still outstanding and is the one
+acceptance criterion nothing in this repository can satisfy on its own.
+
+To connect Claude Desktop:
+
+```json
+{ "mcpServers": { "tagbridge": {
+    "command": "pnpm", "args": ["--silent", "mcp"], "cwd": "/path/to/tagbridge" } } }
+```
 
 ## Ground rules this project holds itself to
 
