@@ -14,8 +14,12 @@ export const maxDuration = 60;
  * The backoff schedule was computed, stored and tested, and nothing consumed
  * it: the only caller of `retryableEvents()` was a button on the admin
  * dashboard, so a failed event's next attempt was whenever somebody happened
- * to open the page. The button stays as a manual override; this is what
- * actually drives the queue.
+ * to open the page.
+ *
+ * This runs daily, which is the ceiling on a Vercel Hobby plan. Daily alone
+ * would be a poor answer for a retry queue, so the webhook route also drains a
+ * few on its way out; this is the floor that catches a queue nothing has
+ * touched. The dashboard button stays as a manual override.
  */
 export async function GET(request: Request): Promise<NextResponse> {
   if (!isScheduler(request)) {

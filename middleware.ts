@@ -12,24 +12,42 @@ const PROTECTED_PREFIXES = ['/account', '/quotes', '/orders', '/approvals'];
 const ADMIN_PREFIXES = ['/admin'];
 
 /**
- * The Content-Security-Policy, with a per-request nonce.
+ * The Content-Security-Policy.
  *
- * It lives here rather than in `next.config.ts` for a reason worth recording:
- * a static `script-src 'self'` blocks Next's own inline bootstrap scripts,
- * which carry the RSC payload. Setting it that way rendered every page in the
- * app as an empty body — the site looked up and served nothing. The e2e suite
- * caught it; a header nobody exercises is a header nobody notices breaking.
+ * This took two attempts and the second one is a deliberate compromise, so it
+ * is worth writing down rather than leaving as a mysterious `unsafe-inline`.
  *
- * A nonce is the correct answer: Next stamps it onto the scripts it emits, so
- * the framework's own code runs and injected script does not. The cost is that
- * a nonce is per-request, so pages carrying one cannot be served from the
- * static cache — paid deliberately, and only on the routes that render HTML.
+ * Attempt one was `script-src 'self'` in the static headers. That blocks
+ * Next's own inline bootstrap — the scripts carrying the RSC payload — so
+ * every page in the app returned 200 and rendered an empty body.
+ *
+ * Attempt two was a per-request nonce here. That works on a dynamically
+ * rendered page and is silently broken on a cached one: the HTML comes out of
+ * the ISR cache carrying the nonce it was generated with, while the response
+ * header carries a fresh one. They do not match, so the same scripts are
+ * blocked again — and only on the pages people actually land on, because those
+ * are the ones worth caching. Lighthouse caught it as a best-practices drop
+ * from 100 to 92; the real cost was that the home and product pages had
+ * quietly stopped hydrating.
+ *
+ * A nonce would require rendering every page dynamically. This app caches the
+ * home and product pages on purpose — `force-dynamic` there defers metadata
+ * resolution and streams the title and description into the body, where a
+ * crawler that does not run JavaScript never sees them. Trading working SEO
+ * for a stricter script-src is the wrong way round for a storefront.
+ *
+ * So: `'unsafe-inline'` on script-src, everything else kept strict. This still
+ * stops external script origins, plugins, framing, base-tag hijacking and
+ * off-site form posts. It does not stop injected inline script, and saying so
+ * plainly beats a header that looks stronger than it is. The application ships
+ * no third-party JavaScript, which is what keeps the remaining surface small.
  */
-function contentSecurityPolicy(nonce: string): string {
+function contentSecurityPolicy(secure: boolean): string {
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
-    // Tailwind injects styles; there is no nonce-able seam for them.
+    // See above. Next's inline bootstrap has no nonce-able seam on a cached page.
+    "script-src 'self' 'unsafe-inline'",
+    // Tailwind injects styles; likewise no seam.
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
@@ -40,7 +58,11 @@ function contentSecurityPolicy(nonce: string): string {
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "object-src 'none'",
-    'upgrade-insecure-requests',
+    // Only where there is something to upgrade to. On a plain-HTTP origin — a
+    // local run, or CI's own server — this rewrites same-origin redirects to
+    // https and they fail with an SSL error: a broken navigation in exchange
+    // for nothing.
+    ...(secure ? ['upgrade-insecure-requests'] : []),
   ].join('; ');
 }
 
@@ -77,17 +99,13 @@ export default auth((req) => {
 
   if (isAsset(pathname)) return NextResponse.next();
 
-  // The nonce travels to the renderer on the request, and to the browser on
-  // the response. Both halves are required: one without the other either
-  // blocks the framework or permits anything.
-  // Web Crypto, not node:crypto — middleware runs on the edge runtime, where
-  // the node builtin is not available and the build fails outright.
-  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
-  const headers = new Headers(req.headers);
-  headers.set('x-nonce', nonce);
+  // Static across requests, which is what lets it sit on a cached page
+  // without the header and the HTML disagreeing.
+  const secure =
+    req.nextUrl.protocol === 'https:' || req.headers.get('x-forwarded-proto') === 'https';
 
-  const response = NextResponse.next({ request: { headers } });
-  response.headers.set('Content-Security-Policy', contentSecurityPolicy(nonce));
+  const response = NextResponse.next();
+  response.headers.set('Content-Security-Policy', contentSecurityPolicy(secure));
   return response;
 });
 

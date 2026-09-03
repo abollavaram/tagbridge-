@@ -445,14 +445,43 @@ subscription events only, so the card path was — take the money, and leave the
 a page reading "nothing has been charged yet", permanently. It was invisible only
 because no Stripe key is set on the demo.
 
-**I broke every page in the application with a Content-Security-Policy.** Adding
-`script-src 'self'` to the static headers blocks Next's own inline bootstrap scripts,
-the ones carrying the RSC payload. The server returned 200, the HTML was in the
+**I broke every page in the application with a Content-Security-Policy — twice.**
+Adding `script-src 'self'` to the static headers blocks Next's own inline bootstrap
+scripts, the ones carrying the RSC payload. The server returned 200, the HTML was in the
 response, and nothing ran — every page rendered as an empty body. The e2e suite caught
 it inside the same batch, which is the entire argument for having one: a header nobody
-exercises is a header nobody notices breaking. The fix is a nonce issued per request in
-middleware, using Web Crypto rather than `node:crypto`, which fails the build outright
-on the edge runtime.
+exercises is a header nobody notices breaking.
+
+The second attempt was a per-request nonce in middleware, which is the textbook answer
+and is silently wrong here. A nonce works on a dynamically rendered page; on a cached
+one the HTML comes out of the ISR cache carrying whatever nonce it was generated with
+while the header carries a fresh one. They stop matching, the same scripts are blocked
+again, and it only affects the pages worth caching — which are the ones people land on.
+The e2e suite missed this because it asserted the header's *shape*, not that a cached
+page still ran its scripts. Lighthouse caught it as best-practices dropping 100 → 92 on
+Home and Product while Catalog stayed at 96, and that asymmetry was the tell.
+
+Making it work would mean rendering every page dynamically, and the home and product
+pages are cached deliberately — `force-dynamic` there defers metadata resolution and
+streams the title and description into the body, where a crawler that does not run
+JavaScript never sees them. So the policy keeps `'unsafe-inline'` on script-src and
+stays strict everywhere else, and the compromise is written down in `middleware.ts`
+rather than left looking like carelessness. There is now a test that loads a *cached*
+page and asserts no CSP violation, which is the check that was missing.
+
+**A signed webhook test passed locally and failed in CI, for a reason that was not
+flaky.** The e2e signs its own requests, and reconstructed the signing secret from
+`AUTH_SECRET`'s default value. CI sets `AUTH_SECRET` to a per-run value, so the server
+derived a different secret and every signed request came back `invalid signature`. The
+test was pinned to a default it had no right to assume; the e2e server now sets
+`STRIPE_WEBHOOK_SECRET` explicitly, which also exercises the configured-secret path
+production actually uses.
+
+**A ten-minute cron is rejected at deploy time on a Hobby plan.** The retry drain wanted
+to run often and cannot. Daily alone is a poor answer for a retry queue, so the webhook
+route drains a few failed events on its way out through `after()` — failures clear
+whenever traffic arrives, which for a webhook endpoint is exactly when they matter, and
+the daily cron is the floor that catches a queue nothing has touched.
 
 **The drift detector healed its own alerts.** Reconciliation read state it had written
 itself: the first run marked a record `drifted`, the second no longer matched its own

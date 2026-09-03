@@ -1,7 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { z } from 'zod';
 import { getEnv } from '@/lib/env';
-import { processEvent, recordEvent } from '@/lib/sync/events';
+import { processEvent, recordEvent, retryableEvents } from '@/lib/sync/events';
 import { getSubscriptionProvider } from '@/lib/sync/provider';
 import { verifySignature } from '@/lib/sync/signature';
 import { webhookSecret } from '@/lib/sync/secret';
@@ -76,6 +76,27 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const result = await processEvent(event.id, getSubscriptionProvider());
   log.info({ eventId: event.id, type: event.type, status: result.status }, 'webhook processed');
+
+  // Drain a few failed events on the way out.
+  //
+  // The backoff schedule is computed and stored, and the cron that consumes it
+  // can only run daily on this plan — a ten-minute schedule is rejected at
+  // deploy time. Daily alone is a poor answer for a retry queue, so failures
+  // are also retried whenever traffic arrives, which for a webhook endpoint is
+  // exactly when they matter. `after()` runs this once the response has been
+  // sent, so the provider still gets its fast 2xx.
+  after(async () => {
+    try {
+      const provider = getSubscriptionProvider();
+      for (const stale of await retryableEvents(5)) {
+        if (stale.providerEventId === event.id) continue;
+        await processEvent(stale.providerEventId, provider);
+      }
+    } catch (error) {
+      // Never let the opportunistic drain affect the delivery it rode in on.
+      log.warn({ err: String(error) }, 'opportunistic retry drain failed');
+    }
+  });
 
   return NextResponse.json({ received: true, duplicate: false, status: result.status });
 }

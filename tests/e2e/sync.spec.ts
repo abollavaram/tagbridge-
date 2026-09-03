@@ -2,12 +2,18 @@ import { createHmac } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * The signing secret this deployment derives when STRIPE_WEBHOOK_SECRET is
- * unset, reconstructed from the AUTH_SECRET the e2e server is started with.
- * Signed here from first principles rather than by calling the app's own
- * helper, so the test would still catch a change to the header format.
+ * The secret the e2e server is configured with, pinned in playwright.config.
+ *
+ * It used to be reconstructed from AUTH_SECRET's default, which held locally
+ * and broke the moment CI set AUTH_SECRET to a per-run value: the server then
+ * derived a different secret and every signed request came back "invalid
+ * signature". A test that signs requests needs the exact key, not one it hopes
+ * the server also computed.
+ *
+ * Still signed here from first principles rather than by calling the app's own
+ * helper, so a change to the header format is still caught.
  */
-const WEBHOOK_SECRET = 'derived:webhook:e2e-only-secret-not-used-anywhere-else';
+const WEBHOOK_SECRET = 'whsec_e2e_only_not_a_real_secret';
 const CRON_SECRET = 'e2e-cron-secret';
 
 function sign(body: string, secret = WEBHOOK_SECRET, timestamp = Math.floor(Date.now() / 1000)) {
@@ -231,21 +237,33 @@ test.describe('the new scheduled endpoints', () => {
 });
 
 test.describe('security headers', () => {
-  test('a Content-Security-Policy is set, with a nonce', async ({ request }) => {
+  test('a Content-Security-Policy is set', async ({ request }) => {
     const response = await request.get('/');
     const csp = response.headers()['content-security-policy'];
     expect(csp).toBeTruthy();
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("object-src 'none'");
-    // A nonce, not 'unsafe-inline': the whole point of the header.
-    expect(csp).toMatch(/script-src [^;]*'nonce-/);
+    expect(csp).toContain("base-uri 'self'");
+    expect(csp).toContain("form-action 'self'");
   });
 
-  test('the nonce differs per request', async ({ request }) => {
+  test('the policy is identical across requests, so a cached page stays valid', async ({
+    request,
+  }) => {
+    // A per-request nonce was tried and reverted. A cached page's HTML carries
+    // whatever nonce it was generated with while the header carries a fresh
+    // one; they stop matching and the page silently stops hydrating.
     const first = (await request.get('/')).headers()['content-security-policy'];
     const second = (await request.get('/')).headers()['content-security-policy'];
-    expect(first).not.toBe(second);
+    expect(first).toBe(second);
+  });
+
+  test('does not force an https upgrade on a plain-http origin', async ({ request }) => {
+    // Meaningless where there is nothing to upgrade to, and it rewrites
+    // same-origin redirects into SSL errors.
+    const csp = (await request.get('/')).headers()['content-security-policy'];
+    expect(csp).not.toContain('upgrade-insecure-requests');
   });
 
   test('the policy does not break the page it protects', async ({ page }) => {
@@ -259,6 +277,21 @@ test.describe('security headers', () => {
     });
     await page.goto('/signin');
     await expect(page.getByRole('button', { name: /buyer@example.com/ })).toBeVisible();
+    expect(violations).toEqual([]);
+  });
+
+  test('a cached page still runs its scripts', async ({ page }) => {
+    // Warm the cache, then load it again and assert the client actually booted.
+    // This is the case the nonce broke, and nothing was watching it.
+    await page.goto('/');
+    const violations: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error' && message.text().includes('Content Security')) {
+        violations.push(message.text());
+      }
+    });
+    await page.goto('/');
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     expect(violations).toEqual([]);
   });
 

@@ -36,6 +36,12 @@ export default defineConfig({
           // the e2e server a real secret exercises the same check production
           // uses, rather than a development escape hatch.
           CRON_SECRET: 'e2e-cron-secret',
+          // Pinned explicitly rather than left to derive from AUTH_SECRET.
+          // The webhook tests sign requests themselves, so they need the exact
+          // secret the server verifies with — and CI sets AUTH_SECRET to a
+          // per-run value, which silently made every signed request invalid.
+          // This also exercises the configured-secret path production uses.
+          STRIPE_WEBHOOK_SECRET: 'whsec_e2e_only_not_a_real_secret',
         },
       },
 });

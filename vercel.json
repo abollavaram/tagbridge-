@@ -17,7 +17,7 @@
     },
     {
       "path": "/api/cron/drain-retries",
-      "schedule": "*/10 * * * *"
+      "schedule": "41 5 * * *"
     }
   ]
 }
